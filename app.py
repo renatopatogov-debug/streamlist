@@ -1110,6 +1110,9 @@ def get_stream_data(video_id: str, force: bool = False, avoid=(),
         if mine and "cancelado" not in str(e):
             with _cache_lock:
                 _fail_cache[video_id] = (time.time(), str(e)[:300])
+                if len(_fail_cache) > 200:
+                    for k_old, _ in sorted(_fail_cache.items(), key=lambda kv: kv[1][0])[:100]:
+                        _fail_cache.pop(k_old, None)
         raise
     finally:
         with _inflight_lock:
@@ -2441,11 +2444,7 @@ def _apply_settings(data: dict) -> list:
     return errs
 
 @app.post("/api/settings")
-async def update_settings(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
+def update_settings(data: dict):
     if not isinstance(data, dict):
         raise HTTPException(400, "o corpo deve ser um objeto JSON")
     errs = _apply_settings(data)
@@ -2543,16 +2542,14 @@ def cache_delete_one(video_id: str):
     return {"ok": _cache_delete(video_id)}
 
 @app.post("/api/cache/warm")
-async def cache_warm(request: Request):
+def cache_warm(body: dict):
     """Enfileira faixas para pré-cache EM ORDEM (uma por vez) — leitura sequencial.
     O worker pula o que já está no cache; respeita cache_enabled + prefetch_next."""
     if not SETTINGS.get("cache_enabled") or not SETTINGS.get("prefetch_next", True):
         return {"ok": True, "queued": 0, "reason": "prefetch desligado no painel"}
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
-    ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "o corpo deve ser um objeto JSON")
+    ids = body.get("ids")
     if not isinstance(ids, list):
         raise HTTPException(400, "corpo deve ser {\"ids\": [...]}")
     _ensure_warm_worker()
@@ -2764,13 +2761,9 @@ def list_stations():
         return [_station_row(r) for r in con.execute("SELECT * FROM stations ORDER BY name")]
 
 @app.post("/api/stations")
-async def create_station(request: Request):
+def create_station(data: dict):
     """Cria uma estação a partir de uma faixa-semente do YouTube. Nome é
     obrigatório; criar a mesma semente 2x não duplica."""
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
     if not isinstance(data, dict):
         raise HTTPException(400, "o corpo deve ser um objeto JSON")
     name = str(data.get("name") or "").strip()[:80]
@@ -2799,14 +2792,12 @@ def delete_station(sid: int):
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/reorder")
-async def reorder_playlist(pid: int, request: Request):
+def reorder_playlist(pid: int, body: dict):
     """Reordena as faixas de uma playlist: corpo {"order": [videoId, ...]}.
     IDs que não estiverem no corpo mantêm a posição relativa que já tinham."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
-    order = body.get("order") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "o corpo deve ser um objeto JSON")
+    order = body.get("order")
     if not isinstance(order, list):
         raise HTTPException(400, "corpo deve ser {\"order\": [videoId, ...]}")
     with db() as con:
@@ -2820,14 +2811,12 @@ async def reorder_playlist(pid: int, request: Request):
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/items_bulk")
-async def add_items_bulk(pid: int, request: Request):
+def add_items_bulk(pid: int, body: dict):
     """Importação em lote (playlist inteira do YouTube): {"tracks": [{videoId, ...}]}.
     IDs inválidos são ignorados; a ordem enviada é preservada."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
-    tracks = body.get("tracks") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        raise HTTPException(400, "o corpo deve ser um objeto JSON")
+    tracks = body.get("tracks")
     if not isinstance(tracks, list) or not tracks:
         raise HTTPException(400, "corpo deve ser {\"tracks\": [...]}")
     tracks = tracks[:500]
@@ -2971,11 +2960,9 @@ def _pl_download_thread(job: dict, pid: str, tracks, folder_name: str):
         job["errors"].append(str(e)[:200])
 
 @app.post("/api/ytplaylist/download")
-async def ytplaylist_download(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "JSON inválido")
+def ytplaylist_download(body: dict):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "o corpo deve ser um objeto JSON")
     pid = _playlist_id_from_url(str(body.get("url") or ""))
     if not pid:
         raise HTTPException(400, "Não reconheci uma playlist nesse link (?list=… ou ID cru).")
