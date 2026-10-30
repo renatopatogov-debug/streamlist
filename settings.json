@@ -1,0 +1,20 @@
+{
+  "cache_enabled": true,
+  "cache_limit_mb": 800,
+  "prefetch_next": true,
+  "race_wave": 3,
+  "extract_timeout": 25,
+  "mp3_quality": "320",
+  "force_ipv4": true,
+  "use_cookies": true,
+  "smart_cache": true,
+  "learn_next": true,
+  "pairing_required": false,
+  "pair_key": "4UHeZwFrqivD",
+  "ejs_needed": false,
+  "client_ms": {
+    "android_vr": 8621,
+    "mweb": 8284,
+    "padrão": 7407
+  }
+}

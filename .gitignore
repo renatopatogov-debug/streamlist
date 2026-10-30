@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Microsoft Edge / WebView2 user runtime data (pywebview)
+.webdata/
+
+# Local cache & downloads (streaming audio files, user media)
+cache/
+downloads/
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local credentials & secrets
+cookies.txt
+.env
+*.pem
+*.key
+
+# Temporary backups & IDE tool artifacts
+.zwork/
+backup-*/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini

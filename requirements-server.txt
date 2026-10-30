@@ -1,0 +1,21 @@
+# StremMusic — dependências para SERVIDOR (sem interface de janela)
+# Use este arquivo em VPS / NAS / mini PC / container:
+#     pip install -r requirements-server.txt
+#
+# Diferença para o requirements.txt: o pywebview NÃO entra. Ele só serve para o
+# modo janela nativa (desktop.py), e em Linux sem GTK/Qt ele falha na instalação
+# e derruba o `pip install` inteiro — motivo comum de "não sobe no servidor".
+
+fastapi>=0.110
+uvicorn>=0.29
+# OBRIGATÓRIO: /api/uploads usa UploadFile/File. Sem ele o FastAPI não sobe:
+# "Form data requires python-multipart to be installed".
+python-multipart>=0.0.9
+ytmusicapi>=1.8.0
+yt-dlp>=2026.10
+requests>=2.31
+mutagen>=1.47
+qrcode>=7.4
+# PO Token do YouTube. O plugin é Python puro, mas o provedor (do lado do
+# servidor) precisa do Deno + o repositório bgutil — ver deploy/README.md.
+bgutil-ytdlp-pot-provider>=2.0

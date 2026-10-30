@@ -1,0 +1,36 @@
+[Unit]
+Description=StremMusic (servidor web de música)
+Documentation=file:///opt/stremmusic/HOSTING.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stremmusic
+Group=stremmusic
+WorkingDirectory=/opt/stremmusic
+
+# --- configuração (ajuste os três primeiros) ---
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=DATA_DIR=/var/lib/stremmusic
+# Senha de acesso. Gere com:  python3 -c "import secrets;print(secrets.token_urlsafe(24))"
+Environment=APP_TOKEN=troque-por-uma-senha-longa
+Environment=AUTO_UPDATE_YTDLP=1
+Environment=PROBE_ON_BOOT=1
+
+ExecStart=/opt/stremmusic/.venv/bin/python /opt/stremmusic/app.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# --- endurecimento básico ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# o app grava ícones na pasta do código se faltarem e dados no DATA_DIR
+ReadWritePaths=/opt/stremmusic /var/lib/stremmusic
+
+[Install]
+WantedBy=multi-user.target
