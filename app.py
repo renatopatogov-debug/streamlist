@@ -3126,20 +3126,83 @@ def add_items_bulk(pid: int, body: dict):
     return {"ok": True, "added": n}
 
 # ---------- Playlists do YouTube via link (importar e/ou baixar) ----------
-_PL_PREFIX_RE = re.compile(r"^(PL|OLAK5uy_|RD|UU|LL|FL|TL)[A-Za-z0-9_-]{8,}$")
+_PL_PREFIX_RE = re.compile(r"^(VL)?(PL|OLAK5uy_|RD|UU|LL|FL|TL)[A-Za-z0-9_-]{8,}$")
 
-def _playlist_id_from_url(s: str):
+def _clean_playlist_id(pid: str) -> str:
+    """Limpa e normaliza o ID da playlist, removendo pontuações e prefixo VL."""
+    if not pid:
+        return ""
+    pid = str(pid).strip().rstrip(".,;/")
+    # YouTube Music frequentemente embute VL antes do ID real da lista (ex: VLPL... ou VLOLAK...)
+    if pid.startswith("VL") and (pid.startswith("VLPL") or pid.startswith("VLOLAK") or pid.startswith("VLRD") or len(pid) > 16):
+        pid = pid[2:]
+    return pid
+
+def _playlist_id_from_url(s: str) -> str | None:
     """ID de playlist de um link do YouTube/YT Music (?list=…) ou o ID cru (PL…/OLAK5uy_…)."""
     if not s:
         return None
-    s = str(s).strip()
+    s = str(s).strip().strip("'\"<>.,;")
     m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", s)
     if m:
-        return m.group(1)
-    return s if _PL_PREFIX_RE.match(s) else None
+        return _clean_playlist_id(m.group(1))
+    m_browse = re.search(r"/(?:browse|playlist)/(?:VL)?([A-Za-z0-9_-]{8,})", s)
+    if m_browse:
+        return _clean_playlist_id(m_browse.group(1))
+    if _PL_PREFIX_RE.match(s):
+        return _clean_playlist_id(s)
+    return None
 
-def _pl_fetch_flat(pid: str, cap: int = 500) -> dict:
+def _extract_video_id_from_url(s: str) -> str | None:
+    """Tenta extrair um videoId de 11 caracteres de URLs do YouTube se houver."""
+    if not s:
+        return None
+    m = re.search(r"(?:[?&]v=|/v/|youtu\.be/|/embed/|/watch\?v=)([A-Za-z0-9_-]{11})", str(s))
+    return m.group(1) if m else None
+
+def _pl_fetch_flat(pid: str, vid_fallback: str | None = None, cap: int = 500) -> dict:
     """Metadados + faixas em modo FLAT (rápido: uma requisição, sem extrair cada vídeo)."""
+    clean_pid = _clean_playlist_id(pid)
+
+    # 1. Se for rádio dinâmica / mix (RD...) do YouTube Music:
+    if clean_pid.startswith("RD"):
+        vid = vid_fallback
+        if not vid and clean_pid.startswith("RDAMVM") and len(clean_pid) >= 17:
+            vid = clean_pid[6:17]
+        if vid and VID_RE.match(vid):
+            try:
+                res = yt.get_watch_playlist(vid)
+                tracks = []
+                for t in (res.get("tracks") or []):
+                    if not isinstance(t, dict):
+                        continue
+                    v = t.get("videoId")
+                    if not v:
+                        continue
+                    artists = t.get("artists")
+                    art = ", ".join(a.get("name", "") for a in artists if isinstance(a, dict)) if isinstance(artists, list) else (t.get("byline") or "YouTube")
+                    dur = t.get("length") or t.get("duration") or ""
+                    thumbs = t.get("thumbnails") or []
+                    thumb = (thumbs[-1].get("url") if thumbs else "") or f"/api/thumb/{v}"
+                    tracks.append({
+                        "videoId": v,
+                        "title": t.get("title") or "Sem título",
+                        "artist": art or "YouTube",
+                        "thumbnail": thumb,
+                        "duration": str(dur)
+                    })
+                if tracks:
+                    return {
+                        "id": pid,
+                        "title": res.get("title") or f"Mix Rádio ({vid})",
+                        "uploader": "YouTube Music",
+                        "total": len(tracks),
+                        "tracks": tracks[:cap]
+                    }
+            except Exception as ytm_err:
+                logger.debug(f"ytmusicapi get_watch_playlist falhou para mix {clean_pid}: {ytm_err}")
+
+    # 2. Extração via yt-dlp (rápido e compatível com todas as playlists públicas/não-listadas)
     opts = _base_ydl_opts()
     opts.update({
         "noplaylist": False,
@@ -3147,7 +3210,7 @@ def _pl_fetch_flat(pid: str, cap: int = 500) -> dict:
         "playlistend": cap,          # playlist gigante não derruba o app
     })
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/playlist?list={pid}", download=False)
+        info = ydl.extract_info(f"https://www.youtube.com/playlist?list={clean_pid}", download=False)
     tracks = []
     for e in (info or {}).get("entries") or []:
         if not e:
@@ -3170,18 +3233,48 @@ def _pl_fetch_flat(pid: str, cap: int = 500) -> dict:
 _pl_pool = cf.ThreadPoolExecutor(max_workers=2)   # separado: playlist grande não trava busca/extração
 
 @app.get("/api/ytplaylist")
-def get_yt_playlist(url: str = Query(..., min_length=5)):
+def get_yt_playlist(url: str = Query(..., min_length=3)):
     pid = _playlist_id_from_url(url)
+    vid = _extract_video_id_from_url(url)
     if not pid:
-        raise HTTPException(400, "Não reconheci uma playlist nesse link — cola a URL com ?list=… "
-                                 "(YouTube ou YouTube Music); o ID cru (PL…/OLAK5uy_…) também vale.")
+        if vid:
+            raise HTTPException(400, f"O link informado é de uma música/vídeo individual ({vid}), não de uma playlist. "
+                                     f"Para ouvi-la ou adicioná-la a uma playlist local, use a barra de busca acima!")
+        raise HTTPException(400, "Não reconheci uma playlist nesse link — use a URL contendo ?list=… "
+                                 "(do YouTube ou YouTube Music) ou o ID cru (ex: PL… ou OLAK5uy_…).")
+
     try:
-        data = _pl_pool.submit(_pl_fetch_flat, pid).result(timeout=90)
+        data = _pl_pool.submit(_pl_fetch_flat, pid, vid).result(timeout=90)
+    except cf.TimeoutError:
+        raise HTTPException(504, "O YouTube demorou mais de 90 segundos para carregar esta playlist. Tente novamente em instantes.")
     except Exception as e:
-        raise HTTPException(502, _friendly_error(e))
-    if not data["tracks"]:
-        raise HTTPException(502, "A playlist veio vazia — pode ser mix/rádio dinâmica ou lista privada.")
-    data["capped"] = (data["total"] or 0) > len(data["tracks"])
+        err_msg = str(e)
+        low = err_msg.lower()
+        if "does not exist" in low or "not found" in low or "unavailable" in low:
+            if len(pid) < 18 and pid.startswith("PL"):
+                detail = (f"A playlist '{pid}' não foi encontrada no YouTube. "
+                          f"O ID parece estar cortado/incompleto (apenas {len(pid)} caracteres, "
+                          f"enquanto playlists normais do YouTube costumam ter ~34 caracteres). "
+                          f"Verifique se você copiou o link inteiro.")
+            else:
+                detail = f"A playlist '{pid}' não foi encontrada no YouTube (pode ter sido excluída ou o link está incorreto)."
+            raise HTTPException(404, detail)
+        elif "private" in low or "privada" in low:
+            raise HTTPException(403, f"A playlist '{pid}' está configurada como PRIVADA no YouTube. "
+                                     f"Altere a privacidade para 'Não listada' ou 'Pública' no YouTube para poder importá-la.")
+        elif "unviewable" in low:
+            raise HTTPException(400, "Este tipo de lista dinâmica/mix do YouTube Music não pode ser exportado diretamente. "
+                                     "Dica: experimente salvar as faixas em uma playlist comum no YouTube antes de importar.")
+        elif "sign in to confirm" in low or "bot" in low:
+            raise HTTPException(429, "O YouTube limitou temporariamente as requisições deste servidor (verificação anti-bot). "
+                                     "Aguarde alguns minutos ou adicione cookies.txt no painel.")
+        else:
+            raise HTTPException(400, _friendly_error(e))
+
+    if not data.get("tracks"):
+        raise HTTPException(404, "A playlist foi encontrada, mas não contém faixas públicas disponíveis.")
+
+    data["capped"] = (data.get("total") or 0) > len(data["tracks"])
     return data
 
 # --- baixar a playlist inteira em subpasta (job em segundo plano) ---

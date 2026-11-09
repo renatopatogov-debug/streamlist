@@ -1877,7 +1877,8 @@ async function search() {
   }
   // Link de playlist (?list=…) ou ID cru colado na busca → importa em vez de buscar
   const plm = q.match(/[?&]list=([A-Za-z0-9_-]+)/)
-    || (/^(PL|OLAK5uy_|RD|UU|LL|FL|TL)[A-Za-z0-9_-]{8,}$/.test(q) ? [null, q] : null);
+    || q.match(/\/(?:browse|playlist)\/(?:VL)?([A-Za-z0-9_-]{8,})/)
+    || (/^(VL)?(PL|OLAK5uy_|RD|UU|LL|FL|TL)[A-Za-z0-9_-]{8,}$/.test(q) ? [null, q] : null);
   if (plm) {
     activateNav('playlists'); currentTab = 'playlists';
     return loadYtPlaylist(q);
@@ -2366,7 +2367,11 @@ async function loadYtPlaylist(url) {
   try {
     ytPl = await api('/api/ytplaylist?url=' + encodeURIComponent(url));
   } catch (e) {
-    list.innerHTML = `<div class="error"><b>⚠ Playlist</b>\n\n${esc(e.message)}</div>`;
+    list.innerHTML = `<div class="sect-header"><div><div class="sect-sub">Importar Playlist</div><div class="sect-title">Erro ao carregar</div></div>
+      <button class="btn ghost" id="plk-err-back">← Voltar</button></div>
+      <div class="error" style="margin-top:12px;"><b>⚠ Playlist</b>\n\n${esc(e.message)}</div>`;
+    const b = $('#plk-err-back');
+    if (b) b.onclick = () => loadTab();
     return true;
   }
   queue = ytPl.tracks;   // play/next navegam dentro da playlist importada

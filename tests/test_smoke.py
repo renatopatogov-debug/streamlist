@@ -264,6 +264,24 @@ def _run():
     except Exception as e:
         check(f"falha nos testes de túnel/PWA: {e}", False)
 
+    print("\n7) playlists do YouTube/YT Music: resiliência e mensagens claras")
+    try:
+        # Link com ID truncado/inexistente não deve estourar 502 Bad Gateway
+        r_trunc = client.get("/api/ytplaylist?url=https%3A%2F%2Fmusic.youtube.com%2Fplaylist%3Flist%3DPLECHcdjzLJs8")
+        check("playlist truncada/inexistente responde 404 (não 502)", r_trunc.status_code == 404)
+        check("mensagem orienta sobre ID truncado/caracteres", "incompleto" in r_trunc.json().get("detail", "").lower() or "não foi encontrada" in r_trunc.json().get("detail", "").lower())
+
+        # Link de vídeo avulso no importador de playlist
+        r_vid = client.get("/api/ytplaylist?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D0VH1Lim8gL8")
+        check("link de vídeo avulso responde 400 avisando que é faixa", r_vid.status_code == 400 and "individual" in r_vid.json().get("detail", ""))
+
+        # Limpeza de prefixo VL do YouTube Music
+        check("_clean_playlist_id remove prefixo VL do YT Music", A._clean_playlist_id("VLPLrAXtmErZgOeiKm4sgNOknGvNjby9efdf") == "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf")
+        check("_playlist_id_from_url extrai ID limpo de link com VL", A._playlist_id_from_url("https://music.youtube.com/playlist?list=VLPLrAXtmErZgOeiKm4sgNOknGvNjby9efdf") == "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf")
+        check("_playlist_id_from_url aceita /browse/VL...", A._playlist_id_from_url("https://music.youtube.com/browse/VLPLrAXtmErZgOeiKm4sgNOknGvNjby9efdf") == "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf")
+    except Exception as e:
+        check(f"falha nos testes de playlist: {e}", False)
+
     print(f"\n{'='*60}\n  {OKS} passaram, {len(FAILS)} falharam")
     if FAILS:
         print("  FALHAS: " + ", ".join(FAILS))
