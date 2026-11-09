@@ -1482,6 +1482,15 @@ function fixImg(img) {
   const vid = img.dataset.vid || img.closest('.track')?.dataset?.id || '';
   if (!vid) { img.style.visibility = 'hidden'; return; }
   img.onerror = () => { img.onerror = null; img.style.visibility = 'hidden'; };
+  if (vid.startsWith('up_')) {
+    // Arquivo local do usuário: tenta a rota de capa do servidor; se não houver, esconde sem tentar o YouTube
+    if (!img.src.includes('/api/thumb/') && !img.src.includes('/api/local/')) {
+      img.src = `/api/thumb/${vid}`;
+    } else {
+      img.style.visibility = 'hidden';
+    }
+    return;
+  }
   if (img.src.includes('/api/thumb/')) img.src = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
   else img.src = `/api/thumb/${vid}`;
 }

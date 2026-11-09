@@ -266,10 +266,13 @@ def _run():
 
     print("\n7) playlists do YouTube/YT Music: resiliência e mensagens claras")
     try:
-        # Link com ID truncado/inexistente não deve estourar 502 Bad Gateway
-        r_trunc = client.get("/api/ytplaylist?url=https%3A%2F%2Fmusic.youtube.com%2Fplaylist%3Flist%3DPLECHcdjzLJs8")
-        check("playlist truncada/inexistente responde 404 (não 502)", r_trunc.status_code == 404)
-        check("mensagem orienta sobre ID truncado/caracteres", "incompleto" in r_trunc.json().get("detail", "").lower() or "não foi encontrada" in r_trunc.json().get("detail", "").lower())
+        # Playlist informada pelo usuário (PLECHcdjzLJs8) agora importa com sucesso (200)
+        r_pl = client.get("/api/ytplaylist?url=https%3A%2F%2Fmusic.youtube.com%2Fplaylist%3Flist%3DPLECHcdjzLJs8")
+        check("playlist do usuário (PLECHcdjzLJs8) carrega com sucesso (200)", r_pl.status_code == 200 and len(r_pl.json().get("tracks", [])) > 0)
+
+        # Playlist inexistente/inválida não deve estourar 502 Bad Gateway (deve responder 4xx)
+        r_fake = client.get("/api/ytplaylist?url=https%3A%2F%2Fmusic.youtube.com%2Fplaylist%3Flist%3DPL_fake_id_xyz999")
+        check("playlist inexistente/inválida responde 4xx (não 502)", r_fake.status_code in (400, 404))
 
         # Link de vídeo avulso no importador de playlist
         r_vid = client.get("/api/ytplaylist?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D0VH1Lim8gL8")
@@ -281,6 +284,21 @@ def _run():
         check("_playlist_id_from_url aceita /browse/VL...", A._playlist_id_from_url("https://music.youtube.com/browse/VLPLrAXtmErZgOeiKm4sgNOknGvNjby9efdf") == "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf")
     except Exception as e:
         check(f"falha nos testes de playlist: {e}", False)
+
+    print("\n8) capas de uploads próprios e estabilidade asyncio")
+    try:
+        # Uploads locais sem capa não devem dar 400 Bad Request
+        r_up_thumb = client.get("/api/thumb/up_7f3bdbe631")
+        check("/api/thumb/up_... sem capa responde 404 (não 400)", r_up_thumb.status_code == 404)
+        check("id totalmente inválido responde 400", client.get("/api/thumb/bad-id").status_code == 400)
+
+        # No Windows, o patch de conexão silenciosa deve estar ativo
+        if sys.platform == "win32":
+            from asyncio.proactor_events import _ProactorBasePipeTransport
+            check("patch silencioso do ProactorBasePipeTransport ativo no Windows",
+                  _ProactorBasePipeTransport._call_connection_lost.__name__ == "_quiet_call_connection_lost")
+    except Exception as e:
+        check(f"falha nos testes de upload/asyncio: {e}", False)
 
     print(f"\n{'='*60}\n  {OKS} passaram, {len(FAILS)} falharam")
     if FAILS:

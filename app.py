@@ -29,6 +29,30 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+    # No Windows, quando o cliente (navegador/celular) cancela o stream de áudio
+    # ou pula de faixa no meio do buffering, o Winsock dispara WSAECONNRESET (10054).
+    # O asyncio padrão tenta chamar sock.shutdown() no socket já resetado e emite
+    # um traceback inócuo no console. O tratamento abaixo silencia esse erro esperado.
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _quiet_call_connection_lost(self, exc):
+            try:
+                _orig_call_connection_lost(self, exc)
+            except (ConnectionResetError, OSError):
+                try:
+                    if self._sock is not None:
+                        self._sock.close()
+                        self._sock = None
+                    self._called_connection_lost = True
+                except Exception:
+                    pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _quiet_call_connection_lost
+    except Exception:
+        pass
 import importlib
 import urllib.parse
 import concurrent.futures as cf
@@ -1433,6 +1457,9 @@ session = _mount_ipv4(requests.Session())
 CACHE_DIR = DATA / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")     # formato de videoId do YouTube
+UP_RE = re.compile(r"^up_[a-f0-9]{10}$")         # formato de id de arquivo local próprio (upload)
+UP_DIR = DL_DIR / "upload"
+UP_DIR.mkdir(exist_ok=True)
 
 # ---------- Capas (thumbnails) via proxy local ----------
 # Serve as capas DO PRÓPRIO SERVIDOR com cache em disco: não depende de
@@ -1460,6 +1487,16 @@ def _thumb_bytes(video_id: str):
 
 @app.get("/api/thumb/{video_id}")
 def thumb(video_id: str):
+    if UP_RE.match(video_id):
+        with db() as con:
+            rec = con.execute("SELECT art FROM uploads WHERE id=?", (video_id,)).fetchone()
+        if rec and rec["art"]:
+            p = (DATA / rec["art"]).resolve()
+            if p.parent == UP_DIR.resolve() and p.is_file():
+                return FileResponse(p, media_type="image/jpeg",
+                                    headers={"Cache-Control": "public, max-age=86400"})
+        raise HTTPException(404, "upload sem capa embutida")
+
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
     data = _thumb_bytes(video_id)
