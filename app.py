@@ -4164,6 +4164,8 @@ if os.environ.get("PROBE_ON_BOOT", "1") != "0":
 
 if __name__ == "__main__":
     import uvicorn
+    HOST = os.environ.get("HOST", "0.0.0.0")   # 0.0.0.0 = abre pra rede local (celular, TV etc.)
+    PORT = int(os.environ.get("PORT", "8787"))
     _print_version_note()
     _probe_search()
     if AUTO_UPDATE_YTDLP:
@@ -4172,8 +4174,6 @@ if __name__ == "__main__":
     if SETTINGS.get("cloudflare_tunnel") or os.environ.get("ENABLE_TUNNEL") == "1" or os.environ.get("CLOUDFLARE_TUNNEL") == "1" or "--tunnel" in sys.argv:
         print("  ☁️  Iniciando Túnel Cloudflare em segundo plano...")
         _start_cloudflared_tunnel(PORT)
-    HOST = os.environ.get("HOST", "0.0.0.0")   # 0.0.0.0 = abre pra rede local (celular, TV etc.)
-    PORT = int(os.environ.get("PORT", "8787"))
     print("\n  🎵 StremMusic rodando — build 2026-10-25.2")
     print("     (2026-10-25.2: PRE-TESTS no arranque — mede os clients e decide o solucionador JS ·")
     print("      EJS virou plano B: -4,1s medidos por faixa · 1º client sozinho na frente, paralelo só no resgate ·")
