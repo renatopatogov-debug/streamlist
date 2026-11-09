@@ -480,17 +480,36 @@ def _qr_svg(data: str):
 
 _LOCKED_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>StremMusic — servidor fechado</title>
-<style>body{background:#0b0b12;color:#fff;font-family:system-ui,sans-serif;display:flex;
-flex-direction:column;align-items:center;justify-content:center;min-height:100vh;
-text-align:center;margin:0;padding:24px}h1{color:#ff5c8a;font-size:22px}
-p{opacity:.75;line-height:1.6;max-width:460px}code{background:#1d1d2e;padding:2px 8px;border-radius:6px}
-a{color:#7aa2ff}</style></head>
-<body><h1>Servidor fechado</h1>
-<p>Esse StremMusic só aceita aparelhos pareados. No PC do dono, abra
-<code>http://localhost:8787/painel</code> e mostre o QR — a câmera do celular
-abre o app já conectado.</p>
-<p>Dono aqui? Esse mesmo painel liga e desliga a fechadura.</p></body></html>"""
+<title>StremMusic · Acesso Protegido</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#020617;color:#f1f5f9;font-family:'Outfit',system-ui,-apple-system,sans-serif;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;
+  text-align:center;padding:24px;-webkit-font-smoothing:antialiased}
+  .box{background:rgba(15,23,42,.65);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:36px 28px;max-width:420px;width:100%;box-shadow:0 24px 48px rgba(0,0,0,.5)}
+  .icon{width:56px;height:56px;border-radius:18px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);color:#38bdf8;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:24px}
+  h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:10px;color:#fff}
+  p{color:#94a3b8;font-size:14px;line-height:1.6;margin-bottom:20px}
+  code{background:rgba(255,255,255,.06);color:#e2e8f0;padding:2px 8px;border-radius:6px;font-size:12.5px}
+  form{display:flex;gap:8px;margin-top:8px}
+  input{flex:1;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;outline:none}
+  input:focus{border-color:#38bdf8}
+  button{background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:14px;font-weight:700;cursor:pointer}
+</style></head>
+<body><div class="box">
+  <div class="icon">🔒</div>
+  <h1>Acesso restrito a pareados</h1>
+  <p>Escaneie o QR Code no painel do computador (<code>http://localhost:8787/painel</code>) ou digite a chave de acesso abaixo:</p>
+  <form method="GET" action="/">
+    <input name="sk" placeholder="Chave de acesso…" autocomplete="off" required>
+    <button type="submit">Entrar</button>
+  </form>
+</div></body></html>"""
+
+_PUBLIC_PWA_PATHS = {
+    "/manifest.webmanifest", "/sw.js", "/favicon.ico",
+    "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"
+}
 
 @app.middleware("http")
 async def _pair_guard(request: Request, call_next):
@@ -507,7 +526,7 @@ async def _pair_guard(request: Request, call_next):
             return Response("Painel disponível só no PC do dono (localhost).",
                             status_code=403, media_type="text/plain; charset=utf-8")
         return await call_next(request)
-    if not SETTINGS.get("pairing_required") or local:
+    if path in _PUBLIC_PWA_PATHS or not SETTINGS.get("pairing_required") or local:
         return await call_next(request)
     key = _pair_key()
     sk = request.query_params.get("sk")
@@ -523,28 +542,53 @@ async def _pair_guard(request: Request, call_next):
     return HTMLResponse(_LOCKED_HTML, status_code=403)
 
 _PAINEL_CSS = """
-  body{background:#0b0b12;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif;margin:0;padding:28px}
-  .wrap{max-width:920px;margin:0 auto}
-  h1{font-size:26px;margin:0 0 4px}h1 span{color:#ff5c8a}
-  .sub{opacity:.6;font-size:14px;margin:0 0 22px}
-  .bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#14141f;border:1px solid #26263a;border-radius:14px;padding:16px 18px;margin-bottom:22px}
-  .badge{padding:6px 14px;border-radius:999px;font-size:13px;font-weight:600}
-  .on{background:#3d1526;color:#ff7aa2;border:1px solid #ff5c8a}
-  .off{background:#15203d;color:#7aa2ff;border:1px solid #4a6cff}
-  button{background:#ff5c8a;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
-  button.ghost{background:#26263a}
-  .key{font-family:ui-monospace,monospace;font-size:13px;opacity:.85}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-  .card{background:#14141f;border:1px solid #26263a;border-radius:14px;padding:16px}
-  .tag{font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.55}
-  .ip{font-size:20px;font-weight:700;margin:4px 0 8px}
-  .url{font-family:ui-monospace,monospace;font-size:12px;background:#0d0d16;border-radius:8px;padding:8px 10px;word-break:break-all;cursor:pointer}
-  .url[data-c="1"]::after{content:" · copiado ✓";color:#7de08d}
-  .qr{background:#fff;border-radius:12px;padding:10px;margin-top:12px;width:min(200px,100%)}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#020617;background-image:radial-gradient(ellipse at 50% 0%,rgba(56,189,248,.11),transparent 65%);color:#f1f5f9;font-family:'Outfit',system-ui,-apple-system,sans-serif;padding:32px 20px 60px;min-height:100vh;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:940px;margin:0 auto}
+  .top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,.06)}
+  .brand{display:flex;align-items:center;gap:14px}
+  .logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#38bdf8,#818cf8);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(56,189,248,.3);font-size:20px;color:#fff;font-weight:800}
+  h1{font-size:22px;font-weight:800;letter-spacing:-.5px;color:#fff}
+  h1 span{background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:#94a3b8;font-size:13px;margin-top:2px}
+  .btn-open{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#f1f5f9;text-decoration:none;padding:10px 18px;border-radius:99px;font-size:13.5px;font-weight:600;transition:.2s}
+  .btn-open:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2)}
+  .controls-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:24px}
+  .ctrl-card{background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:18px 20px;display:flex;flex-direction:column;justify-content:space-between;gap:14px}
+  .ctrl-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .ctrl-title{font-size:14px;font-weight:700;color:#fff}
+  .ctrl-desc{font-size:12.5px;color:#94a3b8;line-height:1.45;margin-top:4px}
+  .ctrl-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .badge{padding:5px 12px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.02em;white-space:nowrap}
+  .badge.on{background:rgba(251,113,133,.12);color:#fb7185;border:1px solid rgba(251,113,133,.3)}
+  .badge.off{background:rgba(74,222,128,.1);color:#4ade80;border:1px solid rgba(74,222,128,.25)}
+  .badge.cf-on{background:rgba(56,189,248,.14);color:#38bdf8;border:1px solid rgba(56,189,248,.35)}
+  .badge.cf-off{background:rgba(255,255,255,.04);color:#94a3b8;border:1px solid rgba(255,255,255,.08)}
+  button{background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;border:0;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;font-family:inherit}
+  button:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  button.ghost{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);color:#e2e8f0}
+  button.ghost:hover{background:rgba(255,255,255,.11);border-color:rgba(255,255,255,.18)}
+  .key-pill{font-family:ui-monospace,monospace;font-size:12px;color:#94a3b8;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.07);padding:7px 12px;border-radius:10px;cursor:pointer;user-select:all}
+  .key-pill b{color:#f8fafc}
+  .sect-label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin:8px 0 12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}
+  .card{background:rgba(15,23,42,.45);border:1px solid rgba(255,255,255,.07);border-radius:20px;padding:22px;display:flex;flex-direction:column;transition:border-color .2s}
+  .card:hover{border-color:rgba(255,255,255,.14)}
+  .card.cf{background:linear-gradient(180deg,rgba(14,58,84,.35),rgba(15,23,42,.6));border-color:rgba(56,189,248,.35)}
+  .tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#64748b}
+  .card.cf .tag{color:#38bdf8}
+  .ip{font-size:19px;font-weight:800;margin:4px 0 10px;color:#fff;letter-spacing:-.3px}
+  .url-row{display:flex;align-items:center;gap:6px}
+  .url{flex:1;font-family:ui-monospace,monospace;font-size:11.5px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:9px 11px;word-break:break-all;cursor:pointer;color:#cbd5e1;transition:.15s}
+  .url:hover{border-color:rgba(56,189,248,.4);color:#fff}
+  .url[data-c="1"]::after{content:" · copiado ✓";color:#4ade80;font-weight:700}
+  .qr{background:#fff;border-radius:16px;padding:12px;margin:16px auto 12px;width:min(196px,100%);box-shadow:0 12px 30px rgba(0,0,0,.35)}
   .qr svg{width:100%;height:auto;display:block}
-  .hint{font-size:12px;opacity:.6;margin-top:8px;line-height:1.5}
-  .local{margin-top:22px;font-size:13px;opacity:.65;line-height:1.7}
-  a{color:#7aa2ff}
+  .hint{font-size:12.5px;color:#94a3b8;line-height:1.5;text-align:center}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(56,189,248,.25);border-top-color:#38bdf8;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-3px;margin-right:8px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .foot{margin-top:28px;padding-top:18px;border-top:1px solid rgba(255,255,255,.05);font-size:12.5px;color:#64748b;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+  a{color:#38bdf8;text-decoration:none}
 """
 
 @app.get("/painel", response_class=HTMLResponse)
@@ -554,69 +598,93 @@ def painel(request: Request):
     on = bool(SETTINGS.get("pairing_required"))
     cards = []
     cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
+    cf_connecting = cf_on and not _CF_TUNNEL_URL
     if _CF_TUNNEL_URL:
         cf_url = f"{_CF_TUNNEL_URL}/?sk={key}"
-        cf_qr = _qr_svg("strem://pair?u=" + urllib.parse.quote(cf_url, safe=""))
+        cf_qr = _qr_svg(cf_url)
         cf_qr_html = (f"<div class='qr'>{cf_qr}</div>"
-                      "<div class='hint'>📷 aponte a câmera do celular — abre em qualquer lugar do mundo (4G/5G) com HTTPS e suporte a PWA</div>"
+                      "<div class='hint'>📷 Aponte a câmera do celular — abre direto no navegador com HTTPS e opção de instalar o app (PWA)</div>"
                       if cf_qr else "")
         cards.append(
-            "<div class='card' style='border:1px solid #0284c7;background:#0b1926'>"
-            "<div class='tag' style='color:#38bdf8'>☁️ Cloudflare Quick Tunnel · Rua (4G/5G sem VPN)</div>"
-            "<div class='ip' style='font-size:16px;color:#38bdf8'>trycloudflare.com</div>"
-            f"<div class='url' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">{cf_url}</div>"
-            "<div class='hint'>Túnel público e criptografado com suporte a streaming progressivo (Range HTTP 206) e PWA instalável.</div>"
+            "<div class='card cf'>"
+            "<div class='tag'>☁️ Cloudflare Quick Tunnel · 4G/5G sem VPN</div>"
+            "<div class='ip'>Acesso na Rua (HTTPS)</div>"
+            f"<div class='url' title='Clique para copiar' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">{cf_url}</div>"
             + cf_qr_html +
             "</div>"
         )
     elif cf_on:
         cards.append(
-            "<div class='card' style='border:1px solid #0284c7;background:#0b1926'>"
-            "<div class='tag' style='color:#38bdf8'>☁️ Cloudflare Quick Tunnel</div>"
-            "<div class='ip' style='font-size:16px;color:#38bdf8'>Conectando...</div>"
-            "<div class='hint'>O túnel está sendo estabelecido com os servidores da Cloudflare. Recarregue em alguns segundos.</div>"
+            "<div class='card cf'>"
+            "<div class='tag'>☁️ Cloudflare Quick Tunnel</div>"
+            "<div class='ip'><span class='spin'></span>Conectando…</div>"
+            "<div class='hint' style='text-align:left;margin-top:6px'>Negociando link HTTPS com a Cloudflare. Esta página atualizará sozinha em instantes…</div>"
             "</div>"
         )
     for ip in _candidate_ips():
         tailscale = ip.startswith("100.")
-        tag = "Tailscale · até fora de casa" if tailscale else "Rede local · mesmo Wi-Fi"
-        hint = ("precisa do Tailscale ligado no celular E no PC" if tailscale
-                else "celular conectado no mesmo Wi-Fi do PC")
+        tag = "Tailscale · VPN P2P" if tailscale else "Rede Local · Mesmo Wi-Fi"
+        hint = ("Requer Tailscale ativo no PC e no celular" if tailscale
+                else "📷 Aponte a câmera do celular conectado no mesmo Wi-Fi")
         url = f"http://{ip}:{port}/?sk={key}"
-        qr = _qr_svg("strem://pair?u=" + urllib.parse.quote(url, safe=""))
-        qr_html = ("<div class='qr'>" + qr + "</div>"
-                   "<div class='hint'>📷 aponte a câmera do celular — abre o app StremMusic já conectado</div>"
+        qr = _qr_svg(url)
+        qr_html = ("<div class='qr'>" + qr + "</div><div class='hint'>" + hint + "</div>"
                    if qr else
-                   "<div class='hint'>QR indisponível: rode <b>pip install qrcode</b> e reinicie o app</div>")
+                   "<div class='hint'>QR indisponível: rode <b>pip install qrcode</b></div>")
         cards.append(
             "<div class='card'><div class='tag'>" + tag + "</div>"
-            "<div class='ip'>" + ip + "</div>"
-            "<div class='url' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">" + url + "</div>"
-            "<div class='hint'>" + hint + "</div>" + qr_html + "</div>")
-    btn = ("<button onclick=\"fetch('/painel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
-           + ("Abrir o servidor (desligar fechadura)" if on else "Fechar o servidor (só pareados)")
+            "<div class='ip'>" + ip + ":" + str(port) + "</div>"
+            "<div class='url' title='Clique para copiar' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">" + url + "</div>"
+            + qr_html + "</div>")
+
+    btn = ("<button class='ghost' onclick=\"fetch('/painel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
+           + ("Destrancar servidor" if on else "Trancar (só pareados)")
            + "</button>")
-    badge = ("<span class='badge on'>FECHADO — só quem pareou</span>" if on
-             else "<span class='badge off'>ABERTO — qualquer um no Wi-Fi entra</span>")
-    cf_btn = ("<button class='ghost' onclick=\"fetch('/painel/tunnel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
-              + ("Desligar Túnel Cloudflare" if cf_on else "Ligar Túnel Cloudflare (Rua/4G)")
+    badge = ("<span class='badge on'>🔒 Trancado · só pareados</span>" if on
+             else "<span class='badge off'>🔓 Aberto na rede local</span>")
+    cf_btn = ("<button class='" + ("ghost" if cf_on else "") + "' onclick=\"this.disabled=true;this.textContent='Aguarde…';fetch('/painel/tunnel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
+              + ("Desligar Túnel" if cf_on else "☁️ Ligar Túnel Cloudflare (4G/5G)")
               + "</button>")
-    cf_badge = ("<span class='badge' style='background:#0e3a54;color:#38bdf8;border:1px solid #0284c7'>☁️ TÚNEL ATIVO</span>" if cf_on
-                else "<span class='badge' style='background:#1f293d;color:#94a3b8;border:1px solid #334155'>☁️ Túnel desligado</span>")
+    cf_badge = ("<span class='badge cf-on'>☁️ Túnel Ativo</span>" if _CF_TUNNEL_URL
+                else ("<span class='badge cf-on'><span class='spin' style='width:10px;height:10px;border-width:1.5px;margin-right:5px'></span>Conectando…</span>" if cf_on
+                      else "<span class='badge cf-off'>Desligado</span>"))
+
+    poll_script = (
+        "<script>setInterval(()=>{fetch('/api/tunnel/status').then(r=>r.json()).then(d=>{if(d.url||!d.active)location.reload()}).catch(()=>{})},1200);</script>"
+        if cf_connecting else ""
+    )
+
     return HTMLResponse(
         "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>StremMusic · Pareamento</title><style>" + _PAINEL_CSS + "</style></head><body>"
-        "<div class='wrap'><h1>🎵 Strem<span>Music</span> · pareamento</h1>"
-        "<p class='sub'>Esta página só abre no PC do dono (localhost) — pela rede ela responde 403.</p>"
-        "<div class='bar'>" + badge + btn + cf_badge + cf_btn
-        + "<button class='ghost' onclick=\"fetch('/painel/rekey',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">Gerar nova chave (despareia todos)</button>"
-        + "<span class='key'>chave: <b>" + key + "</b></span></div>"
+        "<title>StremMusic · Painel do Host</title><style>" + _PAINEL_CSS + "</style></head><body>"
+        "<div class='wrap'>"
+        "<div class='top'>"
+        "<div class='brand'><div class='logo'>▶</div><div><h1>Strem<span>Music</span> · Host</h1>"
+        "<p class='sub'>Painel local de conexão e pareamento de dispositivos</p></div></div>"
+        f"<a class='btn-open' href='http://127.0.0.1:{port}/'>↗ Abrir Player no PC</a>"
+        "</div>"
+        "<div class='controls-grid'>"
+        "<div class='ctrl-card'>"
+        "<div><div class='ctrl-head'><span class='ctrl-title'>Acesso na Rua (Cloudflare 4G/5G)</span>" + cf_badge + "</div>"
+        "<p class='ctrl-desc'>Gera um link HTTPS gratuito (trycloudflare.com) sem abrir portas no roteador e sem precisar de aplicativos extras.</p></div>"
+        "<div class='ctrl-foot'>" + cf_btn + "</div>"
+        "</div>"
+        "<div class='ctrl-card'>"
+        "<div><div class='ctrl-head'><span class='ctrl-title'>Segurança & Pareamento</span>" + badge + "</div>"
+        "<p class='ctrl-desc'>Quando trancado, apenas celulares que leram o QR Code (ou possuem a chave) entram no servidor.</p></div>"
+        "<div class='ctrl-foot'>" + btn
+        + "<button class='ghost' onclick=\"fetch('/painel/rekey',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">Trocar chave</button>"
+        + f"<span class='key-pill' title='Clique para copiar a chave' onclick=\"navigator.clipboard.writeText('{key}')\">chave: <b>{key}</b></span>"
+        "</div></div>"
+        "</div>"
+        "<div class='sect-label'>Cartões de Conexão (Escaneie com a câmera do celular)</div>"
         "<div class='grid'>" + "".join(cards) + "</div>"
-        "<p class='local'>No PC: <a href='http://127.0.0.1:" + str(port) + "/'>http://127.0.0.1:" + str(port) + "/</a>"
-        " · A câmera do celular lê o QR sozinha (Câmera/Lens padrão)."
-        " · Pra ouvir de fora de casa sem abrir portas no roteador: instale o Tailscale (tailscale.com) no PC e no celular — o IP 100.x aparece aqui como cartão próprio.</p>"
-        "</div></body></html>")
+        "<div class='foot'>"
+        f"<span>Player local: <a href='http://127.0.0.1:{port}/'>http://127.0.0.1:{port}/</a></span>"
+        "<span>No celular: abra pelo QR Code e escolha <b>Adicionar à tela inicial</b> para instalar o PWA</span>"
+        "</div>"
+        "</div>" + poll_script + "</body></html>")
 
 def _check_csrf(request: Request):
     sec_site = request.headers.get("sec-fetch-site")
@@ -2128,13 +2196,23 @@ def icon_512(): return _icon_response(512, "icon-512.png")
 def icon_maskable(): return _icon_response(512, "icon-maskable-512.png")
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
-def manifest():
+def manifest(request: Request):
     _ensure_assets()
     f = BASE / "manifest.webmanifest"
     if not f.is_file():
         raise HTTPException(404, "manifest não encontrado")
-    return Response(content=f.read_bytes(), media_type="application/manifest+json",
-                    headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        sk_cookie = request.cookies.get("sk") or request.query_params.get("sk") or ""
+        key = _pair_key()
+        if sk_cookie and _safe_eq(sk_cookie, key):
+            data["start_url"] = f"/?sk={key}"
+        return Response(content=json.dumps(data, ensure_ascii=False),
+                        media_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+    except Exception:
+        return Response(content=f.read_bytes(), media_type="application/manifest+json",
+                        headers={"Cache-Control": "public, max-age=3600"})
 
 @app.get("/sw.js", include_in_schema=False)
 def service_worker():

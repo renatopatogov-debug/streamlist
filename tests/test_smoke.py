@@ -241,6 +241,26 @@ def _run():
 
         cf_bin = A._find_cloudflared()
         check("binário cloudflared localizável", cf_bin is not None and cf_bin.is_file())
+        check("/sw.js tem bypass para /painel", "/painel" in r_sw.text)
+        check("/painel gera QR direto sem prefixo legado strem://", "strem://" not in r_painel.text)
+
+        # Verifica comportamento com fechadura ligada (pairing_required=True) para IP externo
+        prev_lock = A.SETTINGS.get("pairing_required")
+        try:
+            A.SETTINGS["pairing_required"] = True
+            ext_headers = {"x-forwarded-for": "203.0.113.50"}
+            r_locked = client.get("/", headers=ext_headers)
+            check("com fechadura ligada, / bloqueia IP externo não pareado (403) com campo de chave",
+                  r_locked.status_code == 403 and 'name="sk"' in r_locked.text)
+            r_mani_ext = client.get("/manifest.webmanifest", headers=ext_headers)
+            check("mesmo com fechadura ligada, /manifest.webmanifest passa sem cookie (200)",
+                  r_mani_ext.status_code == 200)
+            k = A._pair_key()
+            r_mani_auth = client.get(f"/manifest.webmanifest?sk={k}", headers=ext_headers)
+            check("/manifest.webmanifest autenticado inclui ?sk= no start_url (suporte iOS PWA)",
+                  r_mani_auth.json().get("start_url") == f"/?sk={k}")
+        finally:
+            A.SETTINGS["pairing_required"] = prev_lock
     except Exception as e:
         check(f"falha nos testes de túnel/PWA: {e}", False)
 

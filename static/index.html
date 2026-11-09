@@ -32,7 +32,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <meta name="theme-color" content="#020617">
-<link rel="manifest" href="/manifest.webmanifest">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" type="image/png" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="mobile-web-app-capable" content="yes">
@@ -945,6 +945,126 @@ body.sidebar-closed nav button:focus-visible { outline-offset: 0; }
   html[data-layout="compact"] .track-list,
   html[data-layout="studio"] .track-list { display: flex; flex-direction: column; }
 }
+
+/* --- 11. REVISÃO UX/UI MINIMALISTA & MOBILE MINI-PLAYER --- */
+.search-wrap svg.s-ico { position: absolute; left: 20px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; fill: var(--dim); pointer-events: none; transition: fill 0.3s; }
+#search { padding-right: 44px; }
+.search-clear { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 50%; display: none; align-items: center; justify-content: center; color: var(--txt-muted); background: rgba(255,255,255,.06); transition: .2s; }
+.search-clear:hover { background: rgba(255,255,255,.14); color: var(--txt-pure); }
+.search-clear svg { position: static !important; transform: none !important; width: 15px !important; height: 15px !important; fill: currentColor !important; pointer-events: auto !important; }
+.search-wrap.has-val .search-clear { display: flex; }
+
+button.chip { cursor: pointer; transition: border-color .2s, background .2s; }
+button.chip:hover { background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.15); }
+.chip.offline { color: #fbbf24; border-color: rgba(251,191,36,.3); background: rgba(251,191,36,.08); }
+.chip.offline .dot { background: #fbbf24; box-shadow: 0 0 8px #fbbf24; }
+
+.host-btn { width: 42px; height: 42px; border-radius: 50%; color: var(--txt-muted); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .2s; border: 1px solid transparent; }
+.host-btn:hover { color: var(--accent-base); background: rgba(56,189,248,.1); border-color: rgba(56,189,248,.25); }
+.host-btn svg { width: 20px; height: 20px; fill: currentColor; }
+
+/* Cartões mais limpos e minimalistas nos Ajustes */
+.set-card { padding: 24px 26px; border-radius: 20px; margin-bottom: 18px; }
+.set-card-title { font-size: 16px; margin-bottom: 12px; color: var(--txt-pure); letter-spacing: -.2px; }
+.set-row { padding: 15px 0; gap: 18px; }
+.set-name { font-size: 14.5px; }
+.set-sub { font-size: 12.5px; margin-top: 3px; color: var(--txt-muted); }
+.pwa-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 99px; font-size: 12.5px; font-weight: 700; background: rgba(74,222,128,.12); color: #4ade80; border: 1px solid rgba(74,222,128,.3); }
+.host-url-box { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: rgba(0,0,0,.35); border: 1px solid var(--glass-border); border-radius: 10px; padding: 8px 12px; color: var(--accent-base); cursor: pointer; word-break: break-all; margin-top: 8px; display: inline-block; }
+.host-url-box:hover { border-color: var(--accent-base); }
+
+/* Navegação Mobile mais ergonômica e Mini-Player compacto estilo Spotify/Apple Music */
+@media (max-width: 1000px) {
+  .sidebar { padding: 8px 10px; background: rgba(8, 12, 24, 0.85); }
+  nav { gap: 4px; overflow-x: auto; scrollbar-width: none; justify-content: flex-start; padding: 0 2px; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button { flex: 0 0 auto; min-width: 66px; border-radius: 12px; padding: 7px 10px; font-size: 10.5px; gap: 4px; }
+  nav button.active { box-shadow: none; background: rgba(56, 189, 248, 0.14); color: var(--accent-base); }
+}
+
+@media (max-width: 768px) {
+  /* Quando NÃO está em tela cheia, o player no celular vira uma barra compacta (Mini-Player) */
+  html body:not(.player-fs) #player {
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    height: 68px !important;
+    padding: 8px 12px 11px 10px !important;
+    border-radius: 18px !important;
+    gap: 10px !important;
+    left: 10px !important;
+    right: 10px !important;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  html body:not(.player-fs) #player .now {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    justify-content: flex-start !important;
+    gap: 10px !important;
+  }
+  html body:not(.player-fs) #player #now-img {
+    width: 46px !important;
+    height: 46px !important;
+    border-radius: 11px !important;
+  }
+  html body:not(.player-fs) #player .now:has(#now-img:not([src]))::before,
+  html body:not(.player-fs) #player .now:has(#now-img[src=""])::before {
+    left: 0; width: 46px; height: 46px; border-radius: 11px; font-size: 18px;
+  }
+  html body:not(.player-fs) #player #now-title { font-size: 13.5px !important; }
+  html body:not(.player-fs) #player #now-artist { font-size: 12px !important; margin-top: 2px !important; }
+  html body:not(.player-fs) #player .now-actions,
+  html body:not(.player-fs) #player #btn-shuffle,
+  html body:not(.player-fs) #player #btn-prev,
+  html body:not(.player-fs) #player #btn-repeat,
+  html body:not(.player-fs) #player #btn-lyr,
+  html body:not(.player-fs) #player .volume,
+  html body:not(.player-fs) #player #player-collapse {
+    display: none !important;
+  }
+  html body:not(.player-fs) #player .center {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    gap: 0 !important;
+  }
+  html body:not(.player-fs) #player .controls {
+    gap: 4px !important;
+    margin: 0 !important;
+  }
+  html body:not(.player-fs) #player #play-btn {
+    width: 40px !important;
+    height: 40px !important;
+  }
+  html body:not(.player-fs) #player #play-btn svg {
+    width: 20px !important;
+    height: 20px !important;
+  }
+  html body:not(.player-fs) #player .right-controls {
+    width: auto !important;
+    min-width: 0 !important;
+    gap: 2px !important;
+  }
+  html body:not(.player-fs) #player .progress {
+    position: absolute !important;
+    left: 14px !important;
+    right: 14px !important;
+    bottom: 0 !important;
+    height: 3px !important;
+    gap: 0 !important;
+    pointer-events: none !important;
+  }
+  html body:not(.player-fs) #player .progress .time { display: none !important; }
+  html body:not(.player-fs) #player #seek {
+    height: 3px !important;
+    border-radius: 3px !important;
+  }
+  html body:not(.player-fs) #player #seek::-webkit-slider-thumb { width: 0 !important; height: 0 !important; }
+  html body:not(.player-fs) #scroll { padding-bottom: 110px !important; }
+  html body:not(.player-fs) .toast { bottom: 92px !important; }
+  html body:not(.player-fs) #btn-top { bottom: 92px !important; }
+  html body:not(.player-fs) .offq { bottom: 92px !important; }
+}
 </style>
 </head>
 <body>
@@ -973,11 +1093,13 @@ body.sidebar-closed nav button:focus-visible { outline-offset: 0; }
   <div class="main">
     <header>
       <button class="toggle-sidebar" id="btn-toggle-menu" title="Recolher Menu"><svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg></button>
-      <div class="search-wrap">
-        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.5 6.5 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-        <input id="search" placeholder="O que deseja ouvir hoje? (link de playlist ?list=… também vale)" autofocus autocomplete="off" spellcheck="false" enterkeyhint="search">
+      <div class="search-wrap" id="search-wrap">
+        <svg class="s-ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.5 6.5 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input id="search" placeholder="Buscar músicas, artistas ou colar link de playlist…" autofocus autocomplete="off" spellcheck="false" enterkeyhint="search">
+        <button type="button" id="search-clear" class="search-clear" title="Limpar busca" aria-label="Limpar busca"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
       </div>
-      <div class="chip"><span class="dot"></span> Online</div>
+      <button type="button" class="chip" id="net-chip" title="Status da conexão"><span class="dot"></span><span id="net-txt">Online</span></button>
+      <a href="/painel" target="_blank" id="btn-host-panel" class="host-btn" title="Painel do Host · Conectar celular e Túnel 4G/5G" aria-label="Painel do Host" style="display:none"><svg viewBox="0 0 24 24"><path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zm8-12v8h8V3h-8zm6 6h-4V5h4v4zm-5.99 4h2v2h-2v-2zm2 2h2v2h-2v-2zm-2 2h2v2h-2v-2zm4 0h2v2h-2v-2zm2 2h2v2h-2v-2zm-4 0h2v2h-2v-2zm2-6h2v2h-2v-2zm2 2h2v2h-2v-2z"/></svg></a>
       <button id="btn-layout" data-layout="classic" title="Layout: Clássico — alternar (Alt+1/2/3)" aria-label="Alternar layout"><svg viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v5h-8V3zM3 13h8v8H3v-8zm10-3h8v11h-8V10z"/></svg></button>
     </header>
     <div id="scroll" tabindex="-1"><div id="list"></div></div>
@@ -1735,9 +1857,22 @@ async function openArtist(name, channelId) {
 
 async function search() {
   const q = $('#search').value.trim();
+  const sw = $('#search-wrap');
+  if (sw) sw.classList.toggle('has-val', q.length > 0);
   if (!q) {
+    try {
+      const hist = await api('/api/history');
+      if ($('#search').value.trim() || currentTab !== 'search') return;
+      if (hist && hist.length) {
+        queue = hist.slice(0, 12);
+        list.innerHTML = `<div class="sect-header"><div><div class="sect-sub">Acesso rápido</div><div class="sect-title">Continuar ouvindo</div></div></div>` + renderList(queue);
+        bindTracks(queue);
+        return;
+      }
+    } catch {}
+    if ($('#search').value.trim() || currentTab !== 'search') return;
     list.innerHTML = `<div class="state"><div class="state-icon">${svgIcon(ICON.search)}</div>
-      <h3>Pronto para tocar</h3><p>Pesquise o nome da faixa ou artista para começar.</p></div>`;
+      <h3>Pronto para tocar</h3><p>Pesquise músicas, artistas ou cole o link de uma playlist.</p></div>`;
     return;
   }
   // Link de playlist (?list=…) ou ID cru colado na busca → importa em vez de buscar
@@ -2335,43 +2470,77 @@ async function renderSettings() {
   catch (e) { return showError(e, 'Erro ao carregar configurações'); }
   const s = data.settings;
   SETTINGS = s;
+  const isHostLocal = ['127.0.0.1', 'localhost', '::1'].includes(location.hostname);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  const hostCardHtml = isHostLocal ? `
+    <div class="set-card" style="border-color:rgba(56,189,248,.28);background:linear-gradient(180deg,rgba(14,58,84,.22),rgba(255,255,255,.02))">
+      <div class="set-card-title">📡 Conectar Celular &amp; Túnel 4G/5G</div>
+      <div class="set-row" style="border-top:none">
+        <div class="set-info">
+          <div class="set-name">Cloudflare Quick Tunnel (Rua / 4G / 5G)</div>
+          <div class="set-sub" id="host-cf-sub">Verificando status do túnel…</div>
+          <div id="host-cf-url-wrap"></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" id="btn-host-cf-toggle">Alternar Túnel</button>
+          <a class="btn" href="/painel" target="_blank" style="text-decoration:none">QR Codes (/painel)</a>
+        </div>
+      </div>
+    </div>` : '';
+
+  const pwaStatusHtml = isStandalone
+    ? `<span class="pwa-badge">✓ Instalado no dispositivo</span>`
+    : `<button class="btn" id="btn-install" style="${_bipEvt ? '' : 'display:none'}">📲 Instalar Aplicativo</button>`;
+
+  const pwaSubHtml = isStandalone
+    ? 'O StremMusic já está rodando em modo aplicativo dedicado.'
+    : (isIOS
+      ? 'No iPhone/iPad: toque em <b>Compartilhar (⬆)</b> no Safari e escolha <b>“Adicionar à Tela de Início”</b>.'
+      : 'Abre em janela própria sem barra de endereço e com controles na tela de bloqueio.');
+
   list.innerHTML = `
-    <div class="sect-header"><div><div class="sect-sub">yt-dlp ${esc(data.ytdlp_version || '')}</div><div class="sect-title">Ajustes</div></div></div>
+    <div class="sect-header"><div><div class="sect-sub">yt-dlp ${esc(data.ytdlp_version || '')}</div><div class="sect-title">Ajustes</div></div>
+      <span class="set-sub" id="set-hint" style="color:var(--accent-base);font-weight:600"></span>
+    </div>
+
+    ${hostCardHtml}
 
     <div class="set-card">
       <div class="set-card-title">🎨 Aparência</div>
       <div class="set-row" style="border-top:none;display:block">
-        <div class="set-info" style="margin-bottom:14px">
+        <div class="set-info" style="margin-bottom:12px">
           <div class="set-name">Layout</div>
-          <div class="set-sub">“Automático” escolhe pela tela e reavalia quando você redimensiona a janela ou gira o aparelho. Vale só neste aparelho (salvo no navegador) — atalhos: Alt+1 a Alt+4.</div>
+          <div class="set-sub">Ajusta a densidade visual para a sua tela (atalhos: Alt+1 a Alt+4).</div>
         </div>
         <div class="layout-pick" role="group" aria-label="Layout do app">
           <button type="button" class="layout-opt" data-set-layout="auto" aria-pressed="false">
             <span class="lp-shot lp-auto"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="lp-name">Automático <span class="tick" aria-hidden="true">✓</span></span>
-            <span class="lp-desc">Um layout para cada tela: denso no celular, equilibrado no notebook, imersivo em tela grande.</span>
+            <span class="lp-desc">Adapta sozinho entre celular, notebook e monitor grande.</span>
           </button>
           <button type="button" class="layout-opt" data-set-layout="classic" aria-pressed="false">
             <span class="lp-shot lp-classic"><i></i><i></i><i></i><i></i></span>
             <span class="lp-name">Clássico <span class="tick" aria-hidden="true">✓</span></span>
-            <span class="lp-desc">Menu lateral e player flutuante. O equilíbrio de sempre.</span>
+            <span class="lp-desc">Menu lateral e player flutuante equilibrado.</span>
           </button>
           <button type="button" class="layout-opt" data-set-layout="studio" aria-pressed="false">
             <span class="lp-shot lp-studio"><i></i><i></i><i></i><i></i><i></i></span>
             <span class="lp-name">Estúdio <span class="tick" aria-hidden="true">✓</span></span>
-            <span class="lp-desc">Player em dock, capa grande e mais respiro. Feito para ouvir um álbum inteiro.</span>
+            <span class="lp-desc">Capas maiores e mais respiro visual.</span>
           </button>
           <button type="button" class="layout-opt" data-set-layout="compact" aria-pressed="false">
             <span class="lp-shot lp-compact"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="lp-name">Compacto <span class="tick" aria-hidden="true">✓</span></span>
-            <span class="lp-desc">Lista densa em duas colunas e player fino. Para varrer bibliotecas grandes.</span>
+            <span class="lp-desc">Lista densa para navegar por muitas faixas.</span>
           </button>
         </div>
       </div>
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">Tema</div>
-          <div class="set-sub">Noturno usa preto puro e tons âmbar, com as capas mais baixas — para ambiente escuro, sem estourar o brilho na cara.</div>
+          <div class="set-sub">Noturno aplica fundo preto puro (OLED) e destaque âmbar suave.</div>
         </div>
         <div class="seg" role="group" aria-label="Tema">
           <button type="button" class="seg-opt" data-set-theme="default">Padrão</button>
@@ -2380,8 +2549,8 @@ async function renderSettings() {
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Desempenho</div>
-          <div class="set-sub">“Leve” desliga desfoque de fundo, aurora e animações: alivia PC antigo, celular fraco e economiza bateria.</div>
+          <div class="set-name">Desempenho Visual</div>
+          <div class="set-sub">Modo leve desativa desfoque e animações para economizar bateria.</div>
         </div>
         <div class="seg" role="group" aria-label="Desempenho">
           <button type="button" class="seg-opt" data-set-perf="full">Completo</button>
@@ -2391,76 +2560,106 @@ async function renderSettings() {
     </div>
 
     <div class="set-card">
-      <div class="set-card-title">💾 Cache local</div>
+      <div class="set-card-title">📲 Aplicativo (PWA) &amp; Atalhos</div>
+      <div class="set-row" style="border-top:none">
+        <div class="set-info">
+          <div class="set-name">Modo Aplicativo no Celular ou PC</div>
+          <div class="set-sub">${pwaSubHtml}</div>
+        </div>
+        ${pwaStatusHtml}
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">Atalhos de teclado</div>
+          <div class="set-sub">Espaço, setas, M, F, H, Q, L, / (ou pressione ? a qualquer momento).</div>
+        </div>
+        <button class="btn ghost" id="btn-help">Ver atalhos</button>
+      </div>
+    </div>
+
+    <div class="set-card">
+      <div class="set-card-title">💾 Cache &amp; Reprodução Inteligente</div>
       <div class="cache-meta"><span id="cache-used">…</span><span id="cache-count"></span></div>
       <div class="cache-bar"><div class="cache-fill" id="cache-fill" style="width:0%"></div></div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Cache de músicas</div>
-          <div class="set-sub">Guarda o áudio em disco: tocar de novo é instantâneo e o YouTube nem é acionado. Seus downloads não são afetados.</div>
+          <div class="set-name">Cache local no servidor</div>
+          <div class="set-sub">Guarda faixas completas em disco para replay instantâneo.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-cache"${s.cache_enabled ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Limite do cache</div>
-          <div class="set-sub">Encheu? As músicas mais antigas saem primeiro sozinhas.</div>
+          <div class="set-name">Limite de espaço do cache</div>
+          <div class="set-sub">Remove automaticamente as faixas menos ouvidas ao atingir o limite.</div>
         </div>
         <span class="set-val" id="cache-limit-val">${s.cache_limit_mb} MB</span>
         <input type="range" id="set-cache-limit" class="set-range" min="100" max="1024" step="50" value="${s.cache_limit_mb}">
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Baixar as próximas faixas por antecipação</div>
-          <div class="set-sub">Pré-baixa o áudio das próximas músicas da fila (inclusive de playlists) para o cache. Gasta mais banda e disco, mas a troca de faixa fica instantânea.</div>
+          <div class="set-name">Pré-carregar próximas da fila</div>
+          <div class="set-sub">Baixa antecipadamente as próximas faixas para transição sem espera.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-prefetch"${s.prefetch_next ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Cache inteligente</div>
-          <div class="set-sub">Protege o que você REPETE: cada replay prorroga a permanência da música no cache e favoritos só saem em último caso.</div>
+          <div class="set-name">Priorizar favoritas e mais ouvidas</div>
+          <div class="set-sub">Mantém suas músicas recorrentes protegidas no cache por mais tempo.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-smart"${s.smart_cache ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Aprender o que vem depois</div>
-          <div class="set-sub">Observa suas transições de faixa e pré-guarda no cache o que você costuma ouvir em seguida — a próxima música já está em disco.</div>
+          <div class="set-name">Aprender sequência de escuta (🧠)</div>
+          <div class="set-sub">Memoriza o que você costuma ouvir em seguida e continua a fila sozinho.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-learn"${s.learn_next ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
-        <div class="set-info"><div class="set-name">Músicas guardadas</div><div class="set-sub">Clique no ✕ para tirar uma do cache.</div></div>
+        <div class="set-info"><div class="set-name">Arquivos em cache</div><div class="set-sub">Gerencie ou limpe as faixas armazenadas temporariamente.</div></div>
         <button class="btn ghost" id="btn-clear-cache">Limpar cache</button>
       </div>
       <div id="cache-items" style="margin-top:10px"></div>
     </div>
 
     <div class="set-card">
-      <div class="set-card-title">⚡ Desempenho &amp; robustez</div>
-      <div class="set-row">
+      <div class="set-card-title">⚡ Rede, Extração &amp; MP3</div>
+      <div class="set-row" style="border-top:none">
         <div class="set-info">
-          <div class="set-name">Clients em paralelo por onda</div>
-          <div class="set-sub">Mais paralelo = URL pronta mais rápido, mas consome mais rede e pode esbarrar no limite do YouTube. 2 é o ponto equilibrado.</div>
+          <div class="set-name">Qualidade dos downloads MP3</div>
+          <div class="set-sub">Taxa de bits usada ao converter faixas para a pasta Downloads.</div>
         </div>
-        <select class="set-select" id="set-race">
-          <option value="1">1 · suave</option>
-          <option value="2">2 · padrão</option>
-          <option value="3">3 · turbo</option>
-          <option value="4">4 · fúria</option>
+        <select class="set-select" id="set-mp3">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="320">320 kbps</option>
         </select>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Tempo limite por onda</div>
-          <div class="set-sub">Quanto tempo cada onda de clients tem para responder antes de passar para a próxima. Menor = desiste rápido e tenta o resto.</div>
+          <div class="set-name">Clients paralelos por tentativa</div>
+          <div class="set-sub">2 equilibra velocidade de resposta e prevenção de bloqueios.</div>
+        </div>
+        <select class="set-select" id="set-race">
+          <option value="1">1 · econômico</option>
+          <option value="2">2 · equilibrado</option>
+          <option value="3">3 · rápido</option>
+          <option value="4">4 · máximo</option>
+        </select>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">Tempo limite por tentativa</div>
+          <div class="set-sub">Tempo máximo de espera antes de alternar para o próximo client.</div>
         </div>
         <select class="set-select" id="set-wave-to">
           <option value="10">10s</option>
           <option value="12">12s · padrão</option>
           <option value="15">15s</option>
           <option value="20">20s</option>
+          <option value="25">25s</option>
           <option value="30">30s</option>
           <option value="45">45s</option>
           <option value="60">60s</option>
@@ -2469,71 +2668,33 @@ async function renderSettings() {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">Forçar IPv4</div>
-          <div class="set-sub">Ajuda quando o IPv6 da sua rede está com problema para alcançar o YouTube.</div>
+          <div class="set-sub">Evita engasgos em redes onde a rota IPv6 para o YouTube é instável.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-ipv4"${s.force_ipv4 ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Usar cookies do navegador</div>
-          <div class="set-sub">Usa o cookies.txt na pasta do app — resolve o bloqueio "confirme que não é um bot".</div>
+          <div class="set-name">Usar cookies.txt</div>
+          <div class="set-sub">Autentica extrações caso o IP receba aviso de verificação de bot.</div>
         </div>
         <label class="switch"><input type="checkbox" id="set-cookies"${s.use_cookies ? ' checked' : ''}><span class="sl"></span></label>
       </div>
       <div class="set-row">
         <div class="set-info">
-          <div class="set-name">Saúde dos clients</div>
-          <div class="set-sub">Quem está de pé na disputa por URLs e quem tirou folga depois de falhar seguido. Clients de folga são sondados a cada 90s — nada é banido pra sempre.</div>
+          <div class="set-name">Diagnóstico dos extratores</div>
+          <div class="set-sub">Latência medida e disponibilidade atual de cada client do YouTube.</div>
         </div>
-        <button class="btn ghost" id="btn-cli-refresh">Atualizar</button>
-        <button class="btn ghost" id="btn-cli-probe" style="margin-left:8px">🧪 Sondar agora</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" id="btn-cli-refresh">Atualizar</button>
+          <button class="btn ghost" id="btn-cli-probe">🧪 Medir</button>
+          <button class="btn ghost" id="btn-cli-reset">Resetar</button>
+        </div>
       </div>
       <div id="cli-health" style="margin-top:4px"></div>
-      <div class="set-row" style="margin-top:10px">
-        <div class="set-info">
-          <div class="set-name">Resetar saúde dos clients</div>
-          <div class="set-sub">Força todos os clients de folga a voltarem à disputa na próxima faixa (e esquece o "client preferido" e as marcações de 403).</div>
-        </div>
-        <button class="btn ghost" id="btn-cli-reset">Resetar</button>
-      </div>
-    </div>
-
-    <div class="set-card">
-      <div class="set-card-title">🎧 Downloads</div>
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-name">Qualidade do MP3 baixado</div>
-          <div class="set-sub">Quanto maior, maior o arquivo (conversão via FFmpeg).</div>
-        </div>
-        <select class="set-select" id="set-mp3">
-          <option value="128">128 kbps</option>
-          <option value="192">192 kbps</option>
-          <option value="320">320 kbps</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="set-card">
-      <div class="set-card-title">⌨️ Atalhos &amp; celular</div>
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-name">Atalhos de teclado</div>
-          <div class="set-sub">Espaço, setas, M, F, H, Q, L, / — a lista completa está no botão ao lado (ou aperta ?).</div>
-        </div>
-        <button class="btn ghost" id="btn-help">Ver atalhos</button>
-      </div>
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-name">Instalar como aplicativo</div>
-          <div class="set-sub">No celular: menu do navegador → “Adicionar à tela inicial”. O StremMusic abre em janela própria, com ícone e sem barra do navegador.</div>
-        </div>
-        <button class="btn ghost" id="btn-install" style="display:none">Instalar agora</button>
-      </div>
     </div>
 
     <div class="set-save">
       <button class="btn" id="btn-save-settings">Salvar configurações</button>
-      <span class="set-sub" id="set-hint" style="align-self:center"></span>
     </div>`;
 
   $('#set-race').value = String(s.race_wave);
@@ -2551,9 +2712,49 @@ async function renderSettings() {
   paintLayoutPicker();
   $('#btn-help').onclick = openHelp;
   const bi = $('#btn-install');
-  if (bi && _bipEvt && !window.matchMedia('(display-mode: standalone)').matches) {
+  if (bi && _bipEvt && !isStandalone) {
     bi.style.display = '';
     bi.onclick = () => { _bipEvt.prompt(); _bipEvt = null; bi.style.display = 'none'; };
+  }
+
+  // Status e controle do Túnel Cloudflare direto nos Ajustes (quando no PC local)
+  if (isHostLocal) {
+    const refreshHostTunnel = async () => {
+      try {
+        const st = await api('/api/tunnel/status');
+        const sub = $('#host-cf-sub');
+        const wrap = $('#host-cf-url-wrap');
+        const btn = $('#btn-host-cf-toggle');
+        if (!sub || !btn) return;
+        if (st.url) {
+          sub.innerHTML = '☁️ <b>Túnel Ativo</b> — clique no link abaixo para copiar ou abra o painel para escanear o QR Code:';
+          wrap.innerHTML = `<div class="host-url-box" title="Clique para copiar">${esc(st.url)}</div>`;
+          const box = wrap.querySelector('.host-url-box');
+          if (box) box.onclick = () => { navigator.clipboard.writeText(st.url); toast('Link do túnel copiado ✓'); };
+          btn.textContent = 'Desligar Túnel';
+        } else if (st.active) {
+          sub.textContent = '⏳ Conectando aos servidores da Cloudflare…';
+          wrap.innerHTML = '';
+          btn.textContent = 'Cancelar';
+          setTimeout(refreshHostTunnel, 1800);
+        } else {
+          sub.textContent = 'Desligado · Ligue para gerar um link HTTPS seguro e ouvir no celular pelo 4G/5G.';
+          wrap.innerHTML = '';
+          btn.textContent = '☁️ Ligar Túnel';
+        }
+      } catch {}
+    };
+    const btnCf = $('#btn-host-cf-toggle');
+    if (btnCf) btnCf.onclick = async () => {
+      btnCf.disabled = true;
+      try {
+        const r = await api('/painel/tunnel/toggle', { method: 'POST' });
+        toast(r.active ? '☁️ Iniciando Túnel Cloudflare…' : 'Túnel Cloudflare desligado');
+        setTimeout(refreshHostTunnel, 800);
+      } catch (e) { toast(e.message); }
+      finally { btnCf.disabled = false; }
+    };
+    refreshHostTunnel();
   }
 
   const lim = $('#set-cache-limit');
@@ -2570,10 +2771,10 @@ async function renderSettings() {
     } catch (e) { toast(e.message); }
   };
 
-  $('#btn-save-settings').onclick = async () => {
+  async function saveSettingsNow(silent = false) {
     const btn = $('#btn-save-settings');
-    if (!btn || btn.dataset.busy) return;
-    btn.dataset.busy = '1';
+    if (! $('#set-cache') || (btn && btn.dataset.busy)) return;
+    if (btn) btn.dataset.busy = '1';
     const payload = {
       cache_enabled: $('#set-cache').checked,
       cache_limit_mb: parseInt($('#set-cache-limit').value, 10),
@@ -2593,15 +2794,24 @@ async function renderSettings() {
         body: JSON.stringify(payload),
       });
       Object.assign(SETTINGS, payload);
-      _learnNext = null;   // 🧠 switch "Aprender o que vem depois" mudou: memo invalidado
-      $('#set-hint').textContent = 'salvo às ' + new Date().toLocaleTimeString();
-      toast('Configurações salvas ✓');
+      _learnNext = null;
+      const hint = $('#set-hint');
+      if (hint) hint.textContent = '✓ Salvo às ' + new Date().toLocaleTimeString();
+      if (!silent) toast('Configurações salvas ✓');
       refreshCacheStats();
     } catch (e) { toast(e.message); }
-    finally { delete btn.dataset.busy; }
-  };
+    finally { if (btn) delete btn.dataset.busy; }
+  }
 
-  // 🩺 saúde do motor de extração (apontamento do Argon → rota do glm)
+  $('#btn-save-settings').onclick = () => saveSettingsNow(false);
+  // Auto-save imediato ao alternar qualquer controle
+  ['#set-cache', '#set-prefetch', '#set-smart', '#set-learn', '#set-ipv4', '#set-cookies',
+   '#set-race', '#set-wave-to', '#set-mp3', '#set-cache-limit'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('change', () => saveSettingsNow(true));
+  });
+
+  // 🩺 saúde do motor de extração
   async function renderClientsHealth() {
     try {
       const d = await api('/api/clients/health');
@@ -2613,14 +2823,10 @@ async function renderSettings() {
         const extra = c.state === 'folga'
           ? `volta em ${Math.max(1, Math.ceil(c.resting_s / 60))} min`
           : (c.fails ? `${c.fails} falha${c.fails !== 1 ? 's' : ''}` : 'pronto');
-        const lat = c.ms ? ` · medido ${ms(c.ms)}` : ' · não medido';
-        return `<div class="cache-item"><div class="ci-t">${dot(c.state)} ${esc(c.label)}${c.label === d.preferido ? ' <span class="ci-a">· preferido agora</span>' : ''}</div><div class="ci-s">${esc(extra + lat)}</div></div>`;
+        const lat = c.ms ? ` · ${ms(c.ms)}` : '';
+        return `<div class="cache-item"><div class="ci-t">${dot(c.state)} ${esc(c.label)}${c.label === d.preferido ? ' <span class="ci-a">· preferido</span>' : ''}</div><div class="ci-s">${esc(extra + lat)}</div></div>`;
       }).join('')
-        + `<div class="set-sub" style="margin-top:8px">Cookies: ${d.cookies ? 'ativos ✓ — web_safari/tv disputam' : 'sem cookies — web_safari/tv ficam FORA da disputa (win-rate ~0 sem eles)'}`
-        + `<br>PO Token: ${d.po_token ? 'ativo ✓' : 'INDISPONÍVEL — ligue o bgutil (:4416)'} · ${d.race_wave} client${d.race_wave !== 1 ? 's' : ''} por onda · teto por onda: ${d.extract_timeout}s`
-        + `<br>Solucionador JS (EJS): ${d.ejs === true ? 'ligado (plano B)' : d.ejs === false ? 'dispensado ✓ — extração enxuta resolveu' : 'ainda não medido'}`
-        + `${d.probe_at ? ' · medido ' + new Date(d.probe_at * 1000).toLocaleTimeString() : ''}`
-        + `${d.probe_running ? ' · <b>medindo agora…</b>' : ''}</div>`;
+        + `<div class="set-sub" style="margin-top:8px">Cookies: ${d.cookies ? 'ativos ✓' : 'inativos'} · PO Token: ${d.po_token ? 'ativo ✓' : 'indisponível'} · EJS: ${d.ejs === true ? 'ligado' : d.ejs === false ? 'dispensado ✓' : 'não medido'}${d.probe_running ? ' · <b>medindo…</b>' : ''}</div>`;
     } catch {}
   }
   const btnCliR = $('#btn-cli-refresh');
@@ -2639,7 +2845,7 @@ async function renderSettings() {
     if (!confirm('Devolver TODOS os clients à disputa na próxima faixa?')) return;
     try {
       const r = await api('/api/clients/reset', { method: 'POST' });
-      toast(`Saúde resetada — ${r.cleared} client${r.cleared !== 1 ? 's' : ''} de folga voltaram ✓`);
+      toast(`Saúde resetada — ${r.cleared} client${r.cleared !== 1 ? 's' : ''} voltaram ✓`);
     } catch (e) { toast(e.message); }
     renderClientsHealth();
   };
@@ -3515,6 +3721,76 @@ const _tabScroll = {};
       }
     }
   } catch {}
+  // Limpa ?sk= da barra de endereço após o servidor gravar o cookie de pareamento
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.has('sk')) {
+      localStorage.setItem('sm-sk', u.searchParams.get('sk'));
+      u.searchParams.delete('sk');
+      history.replaceState(null, '', u.pathname + (u.search ? u.search : '') + u.hash);
+    }
+  } catch {}
+
+  // Atalho do Painel do Host no cabeçalho quando aberto localmente no PC
+  if (['127.0.0.1', 'localhost', '::1'].includes(location.hostname)) {
+    const hp = $('#btn-host-panel');
+    if (hp) hp.style.display = '';
+  }
+
+  // Botão limpar busca (✕)
+  const sInp = $('#search'), sWrap = $('#search-wrap'), sClr = $('#search-clear');
+  if (sInp && sWrap && sClr) {
+    sInp.addEventListener('input', () => sWrap.classList.toggle('has-val', sInp.value.length > 0));
+    sClr.onclick = () => {
+      sInp.value = '';
+      sWrap.classList.remove('has-val');
+      closeSugg();
+      _searchQ = '';
+      if (currentTab === 'search') search();
+      sInp.focus();
+    };
+  }
+
+  // Chip de status Online / Offline dinâmico
+  const netChip = $('#net-chip'), netTxt = $('#net-txt');
+  function syncNetStatus() {
+    if (!netChip || !netTxt) return;
+    const on = navigator.onLine !== false;
+    netChip.classList.toggle('offline', !on);
+    netTxt.textContent = on ? 'Online' : 'Offline';
+    netChip.title = on ? 'Conectado ao servidor' : 'Sem conexão — toque para ver músicas salvas no aparelho';
+  }
+  if (netChip) {
+    netChip.onclick = () => {
+      if (navigator.onLine === false || netChip.classList.contains('offline')) {
+        activateNav('offline'); currentTab = 'offline'; loadTab();
+      } else if (['127.0.0.1', 'localhost', '::1'].includes(location.hostname)) {
+        window.open('/painel', '_blank');
+      }
+    };
+  }
+  window.addEventListener('online', syncNetStatus);
+  window.addEventListener('offline', syncNetStatus);
+  syncNetStatus();
+
+  // Gesto de deslizar para baixo (swipe-down) para minimizar o player em tela cheia no celular
+  let _touchY0 = null, _touchX0 = null;
+  const plEl = $('#player');
+  if (plEl) {
+    plEl.addEventListener('touchstart', e => {
+      if (!document.body.classList.contains('player-fs') || e.touches.length !== 1) return;
+      _touchY0 = e.touches[0].clientY;
+      _touchX0 = e.touches[0].clientX;
+    }, { passive: true });
+    plEl.addEventListener('touchend', e => {
+      if (_touchY0 === null || !document.body.classList.contains('player-fs')) return;
+      const dy = (e.changedTouches[0]?.clientY || 0) - _touchY0;
+      const dx = Math.abs((e.changedTouches[0]?.clientX || 0) - (_touchX0 || 0));
+      _touchY0 = _touchX0 = null;
+      if (dy > 70 && dy > dx * 1.5) toggleFullscreen();
+    }, { passive: true });
+  }
+
   updatePrevNext();
   refreshOfflineIds();
   loadTab();
