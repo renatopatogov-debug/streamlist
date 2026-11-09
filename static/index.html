@@ -2317,7 +2317,10 @@ async function loadTab() {
       const totalMB = items.reduce((s, x) => s + (x.size || 0), 0) / 1048576;
       let html = `<div class="sect-header"><div><div class="sect-sub">${items.length} faixa${items.length !== 1 ? 's' : ''} · ${totalMB.toFixed(1)} MB no aparelho · toca sem internet</div><div class="sect-title">No celular</div></div></div>`;
       if (!items.length) {
-        html += `<div class="state"><div class="state-icon">${svgIcon(ICON.phone)}</div><h3>Nada salvo ainda</h3><p>Toque no ícone 📱 de qualquer música para salvá-la aqui, dentro do aparelho. Depois disso ela toca até sem internet e sem o PC ligado (deixe o app aberto).</p></div>`;
+        const isOff = navigator.onLine === false;
+        html += `<div class="state"><div class="state-icon">${svgIcon(ICON.phone)}</div>`
+          + `<h3>${isOff ? 'Sem internet (Modo Avião)' : 'Nada salvo ainda'}</h3>`
+          + `<p>${isOff ? 'O StremMusic busca músicas novas no YouTube via internet. Para ouvir sem conexão ou com o PC desligado, conecte-se uma vez e toque no ícone 📱 de qualquer música para salvá-la no aparelho.' : 'Toque no ícone 📱 de qualquer música para salvá-la aqui, dentro do aparelho. Depois disso ela toca até sem internet e sem o PC ligado.'}</p></div>`;
       } else {
         html += items.map(it => `
           <div class="off-row" data-vid="${esc(it.videoId)}">
@@ -3792,7 +3795,12 @@ const _tabScroll = {};
   }
 
   updatePrevNext();
-  refreshOfflineIds();
+  await refreshOfflineIds();
+  // Se abrir sem conexão (modo avião), abre direto na aba de músicas salvas no celular
+  if (navigator.onLine === false) {
+    currentTab = 'offline';
+    activateNav('offline');
+  }
   loadTab();
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
