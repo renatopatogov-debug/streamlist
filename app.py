@@ -316,6 +316,156 @@ def _candidate_ips() -> list:
     ips.sort(key=lambda ip: 1 if ip.startswith("100.") else 0)  # Tailscale por último
     return ips
 
+# ---------- Cloudflare Quick Tunnel (acesso seguro HTTPS na rua sem abrir portas) ----------
+_CF_TUNNEL_PROC: subprocess.Popen | None = None
+_CF_TUNNEL_URL: str | None = None
+_CF_TUNNEL_STATUS: str = "desligado"
+_CF_TUNNEL_LOCK = threading.Lock()
+
+def _cloudflared_binary_name() -> str:
+    return "cloudflared.exe" if os.name == "nt" else "cloudflared"
+
+def _cloudflared_download_url() -> str | None:
+    import platform
+    sys_name = platform.system().lower()
+    mach = platform.machine().lower()
+    if sys_name == "windows":
+        if "64" in mach or "amd64" in mach or "x86_64" in mach:
+            return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+        return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-386.exe"
+    elif sys_name == "linux":
+        if "aarch64" in mach or "arm64" in mach:
+            return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+        elif "arm" in mach:
+            return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
+        return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+    elif sys_name == "darwin":
+        if "arm64" in mach:
+            return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64"
+        return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64"
+    return None
+
+def _find_cloudflared() -> Path | None:
+    w = shutil.which("cloudflared")
+    if w:
+        return Path(w)
+    bin_name = _cloudflared_binary_name()
+    p1 = DATA / "bin" / bin_name
+    if p1.is_file():
+        return p1
+    p2 = BASE / bin_name
+    if p2.is_file():
+        return p2
+    return None
+
+def _ensure_cloudflared() -> Path | None:
+    found = _find_cloudflared()
+    if found:
+        return found
+    url = _cloudflared_download_url()
+    if not url:
+        return None
+    dest_dir = DATA / "bin"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / _cloudflared_binary_name()
+    part = dest_dir / f".{uuid.uuid4().hex[:6]}.cftmp"
+    print(f"  ☁️  Baixando Cloudflare Tunnel ({_cloudflared_binary_name()})...")
+    try:
+        r = requests.get(url, stream=True, timeout=30)
+        if not r.ok:
+            return None
+        with open(part, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+        part.replace(dest)
+        if os.name != "nt":
+            dest.chmod(0o755)
+        print("  ☁️  Cloudflare Tunnel baixado com sucesso! ✓")
+        return dest
+    except Exception as e:
+        part.unlink(missing_ok=True)
+        print(f"  ⚠️ Falha ao baixar Cloudflare Tunnel: {e}")
+        return None
+
+def _start_cloudflared_tunnel(port: int = 8787):
+    global _CF_TUNNEL_PROC, _CF_TUNNEL_URL, _CF_TUNNEL_STATUS
+    with _CF_TUNNEL_LOCK:
+        if _CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None:
+            return _CF_TUNNEL_URL
+        _CF_TUNNEL_STATUS = "conectando"
+
+    def _worker():
+        global _CF_TUNNEL_PROC, _CF_TUNNEL_URL, _CF_TUNNEL_STATUS
+        bin_path = _ensure_cloudflared()
+        if not bin_path or not bin_path.is_file():
+            with _CF_TUNNEL_LOCK:
+                _CF_TUNNEL_STATUS = "erro: binário não disponível"
+            return
+
+        cmd = [str(bin_path), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=creationflags
+            )
+            with _CF_TUNNEL_LOCK:
+                _CF_TUNNEL_PROC = proc
+
+            for line in iter(proc.stdout.readline, ""):
+                m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+                if m:
+                    url = m.group(0)
+                    with _CF_TUNNEL_LOCK:
+                        _CF_TUNNEL_URL = url
+                        _CF_TUNNEL_STATUS = "ativo"
+                    k = _pair_key()
+                    full_link = f"{url}/?sk={k}"
+                    print(f"\n  ☁️  TÚNEL CLOUDFLARE ATIVO!")
+                    print(f"     Acesso mundial (4G/5G com HTTPS): {full_link}")
+                    print("     📷 Escaneie no celular para ouvir na rua ou instalar como PWA:\n")
+                    try:
+                        import qrcode
+                        qr = qrcode.QRCode(border=1)
+                        qr.add_data(full_link)
+                        qr.print_ascii(invert=True)
+                    except Exception:
+                        pass
+                    break
+
+            proc.wait()
+        except Exception as e:
+            print(f"  ⚠️ Erro no processo do túnel Cloudflare: {e}")
+        finally:
+            with _CF_TUNNEL_LOCK:
+                _CF_TUNNEL_STATUS = "desligado"
+                _CF_TUNNEL_URL = None
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+def _stop_cloudflared_tunnel():
+    global _CF_TUNNEL_PROC, _CF_TUNNEL_URL, _CF_TUNNEL_STATUS
+    with _CF_TUNNEL_LOCK:
+        if _CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None:
+            try:
+                _CF_TUNNEL_PROC.terminate()
+            except Exception:
+                pass
+        _CF_TUNNEL_PROC = None
+        _CF_TUNNEL_URL = None
+        _CF_TUNNEL_STATUS = "desligado"
+
+import atexit
+atexit.register(_stop_cloudflared_tunnel)
+
+
 def _qr_svg(data: str):
     try:  # SVG puro: não precisa de Pillow
         import io
@@ -403,6 +553,30 @@ def painel(request: Request):
     key = _pair_key()
     on = bool(SETTINGS.get("pairing_required"))
     cards = []
+    cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
+    if _CF_TUNNEL_URL:
+        cf_url = f"{_CF_TUNNEL_URL}/?sk={key}"
+        cf_qr = _qr_svg("strem://pair?u=" + urllib.parse.quote(cf_url, safe=""))
+        cf_qr_html = (f"<div class='qr'>{cf_qr}</div>"
+                      "<div class='hint'>📷 aponte a câmera do celular — abre em qualquer lugar do mundo (4G/5G) com HTTPS e suporte a PWA</div>"
+                      if cf_qr else "")
+        cards.append(
+            "<div class='card' style='border:1px solid #0284c7;background:#0b1926'>"
+            "<div class='tag' style='color:#38bdf8'>☁️ Cloudflare Quick Tunnel · Rua (4G/5G sem VPN)</div>"
+            "<div class='ip' style='font-size:16px;color:#38bdf8'>trycloudflare.com</div>"
+            f"<div class='url' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">{cf_url}</div>"
+            "<div class='hint'>Túnel público e criptografado com suporte a streaming progressivo (Range HTTP 206) e PWA instalável.</div>"
+            + cf_qr_html +
+            "</div>"
+        )
+    elif cf_on:
+        cards.append(
+            "<div class='card' style='border:1px solid #0284c7;background:#0b1926'>"
+            "<div class='tag' style='color:#38bdf8'>☁️ Cloudflare Quick Tunnel</div>"
+            "<div class='ip' style='font-size:16px;color:#38bdf8'>Conectando...</div>"
+            "<div class='hint'>O túnel está sendo estabelecido com os servidores da Cloudflare. Recarregue em alguns segundos.</div>"
+            "</div>"
+        )
     for ip in _candidate_ips():
         tailscale = ip.startswith("100.")
         tag = "Tailscale · até fora de casa" if tailscale else "Rede local · mesmo Wi-Fi"
@@ -424,13 +598,18 @@ def painel(request: Request):
            + "</button>")
     badge = ("<span class='badge on'>FECHADO — só quem pareou</span>" if on
              else "<span class='badge off'>ABERTO — qualquer um no Wi-Fi entra</span>")
+    cf_btn = ("<button class='ghost' onclick=\"fetch('/painel/tunnel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
+              + ("Desligar Túnel Cloudflare" if cf_on else "Ligar Túnel Cloudflare (Rua/4G)")
+              + "</button>")
+    cf_badge = ("<span class='badge' style='background:#0e3a54;color:#38bdf8;border:1px solid #0284c7'>☁️ TÚNEL ATIVO</span>" if cf_on
+                else "<span class='badge' style='background:#1f293d;color:#94a3b8;border:1px solid #334155'>☁️ Túnel desligado</span>")
     return HTMLResponse(
         "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>StremMusic · Pareamento</title><style>" + _PAINEL_CSS + "</style></head><body>"
         "<div class='wrap'><h1>🎵 Strem<span>Music</span> · pareamento</h1>"
         "<p class='sub'>Esta página só abre no PC do dono (localhost) — pela rede ela responde 403.</p>"
-        "<div class='bar'>" + badge + btn
+        "<div class='bar'>" + badge + btn + cf_badge + cf_btn
         + "<button class='ghost' onclick=\"fetch('/painel/rekey',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">Gerar nova chave (despareia todos)</button>"
         + "<span class='key'>chave: <b>" + key + "</b></span></div>"
         "<div class='grid'>" + "".join(cards) + "</div>"
@@ -468,6 +647,25 @@ def painel_rekey(request: Request):
     SETTINGS["pair_key"] = secrets.token_urlsafe(9)
     _save_settings()
     return {"pair_key": SETTINGS["pair_key"]}
+
+@app.post("/painel/tunnel/toggle")
+def painel_tunnel_toggle(request: Request):
+    _check_csrf(request)
+    cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
+    if cf_on:
+        _stop_cloudflared_tunnel()
+        SETTINGS["cloudflare_tunnel"] = False
+    else:
+        port = int(os.environ.get("PORT", "8787"))
+        _start_cloudflared_tunnel(port)
+        SETTINGS["cloudflare_tunnel"] = True
+    _save_settings()
+    return {"ok": True, "active": not cf_on}
+
+@app.get("/api/tunnel/status")
+def tunnel_status():
+    cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
+    return {"status": _CF_TUNNEL_STATUS, "active": cf_on, "url": _CF_TUNNEL_URL}
 
 # ---------- Banco ----------
 @contextmanager
@@ -835,6 +1033,7 @@ def _load_settings():
         "learn_next": True,                    # aprende o que você ouve em seguida e pré-guarda
         "pairing_required": False,             # fechadura: só entra quem pareou pelo QR
         "pair_key": "",                        # chave do pareamento; vazia = gera na 1ª necessidade
+        "cloudflare_tunnel": False,            # túnel Cloudflare Quick Tunnel (acesso na rua sem abrir portas)
         "ejs_needed": None,                    # None = sondagem ainda não decidiu
         "client_ms": {},                       # latência medida por client (ms)
     }
@@ -1937,6 +2136,14 @@ def manifest():
     return Response(content=f.read_bytes(), media_type="application/manifest+json",
                     headers={"Cache-Control": "public, max-age=3600"})
 
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    f = BASE / "static" / "sw.js"
+    if not f.is_file():
+        raise HTTPException(404, "sw.js não encontrado")
+    return FileResponse(str(f), media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
 # ---------- Letras multi-fonte (LRCLIB sincronizada + YouTube Music) ----------
 # 1º LRCLIB (lrclib.net — gratuito, sem chave): letra SIMPLES + SINCRONIZADA (LRC)
 # 2º YouTube Music via ytmusicapi (letra simples) — funciona mesmo sem login
@@ -2406,7 +2613,7 @@ def _apply_settings(data: dict) -> list:
         except Exception:
             return None
     for key in ("cache_enabled", "prefetch_next", "force_ipv4", "use_cookies",
-                "smart_cache", "learn_next"):   # (fix glm: o zcode tinha deixado os
+                "smart_cache", "learn_next", "cloudflare_tunnel"):   # (fix glm: o zcode tinha deixado os
         # interruptores do cache inteligente SEM caminho de escrita — a UI mudava
         # e o app ignorava, porque _cache_evict/learn_next lêm mas ninguém gravava)
         if key in data:
@@ -3884,6 +4091,9 @@ if __name__ == "__main__":
     if AUTO_UPDATE_YTDLP:
         print("🔄 AUTO_UPDATE_YTDLP=1 → atualizando o yt-dlp em segundo plano...")
         _auto_update_ytdlp()
+    if SETTINGS.get("cloudflare_tunnel") or os.environ.get("ENABLE_TUNNEL") == "1" or os.environ.get("CLOUDFLARE_TUNNEL") == "1" or "--tunnel" in sys.argv:
+        print("  ☁️  Iniciando Túnel Cloudflare em segundo plano...")
+        _start_cloudflared_tunnel(PORT)
     HOST = os.environ.get("HOST", "0.0.0.0")   # 0.0.0.0 = abre pra rede local (celular, TV etc.)
     PORT = int(os.environ.get("PORT", "8787"))
     print("\n  🎵 StremMusic rodando — build 2026-10-25.2")

@@ -30,6 +30,8 @@ cookies.txt
 *.key
 
 # Temporary backups & IDE tool artifacts
+bin/
+cloudflared*
 .zwork/
 backup-*/
 .pytest_cache/

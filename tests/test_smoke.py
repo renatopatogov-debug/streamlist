@@ -218,6 +218,32 @@ def _run():
         A._EJS.clear()
         A._EJS.update(ejs_bak)
 
+    print("\n6) cloudflare quick tunnel & pwa (rua 4g/5g e modo app no celular)")
+    try:
+        from fastapi.testclient import TestClient
+        client = TestClient(A.app)
+        r_sw = client.get("/sw.js")
+        check("/sw.js responde 200", r_sw.status_code == 200, f"status {r_sw.status_code}")
+        check("/sw.js define Service-Worker-Allowed: /", r_sw.headers.get("Service-Worker-Allowed") == "/")
+        check("/sw.js tem bypass para /api/stream e Range", "/api/stream" in r_sw.text and "range" in r_sw.text)
+
+        r_mani = client.get("/manifest.webmanifest")
+        check("/manifest.webmanifest responde 200", r_mani.status_code == 200)
+
+        r_painel = client.get("/painel")
+        check("/painel exibe controles do Cloudflare Tunnel", "Cloudflare" in r_painel.text and "/painel/tunnel/toggle" in r_painel.text)
+
+        r_stat = client.get("/api/tunnel/status")
+        check("/api/tunnel/status responde JSON válido", r_stat.status_code == 200 and "status" in r_stat.json())
+
+        r_csrf = client.post("/painel/tunnel/toggle", headers={"origin": "http://evil-site.com"})
+        check("/painel/tunnel/toggle bloqueia CSRF de sites externos", r_csrf.status_code == 403)
+
+        cf_bin = A._find_cloudflared()
+        check("binário cloudflared localizável", cf_bin is not None and cf_bin.is_file())
+    except Exception as e:
+        check(f"falha nos testes de túnel/PWA: {e}", False)
+
     print(f"\n{'='*60}\n  {OKS} passaram, {len(FAILS)} falharam")
     if FAILS:
         print("  FALHAS: " + ", ".join(FAILS))

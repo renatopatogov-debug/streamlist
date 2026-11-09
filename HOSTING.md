@@ -43,30 +43,24 @@ sem senha pra implementar, grátis, criptografado ponta a ponta.
 
 ---
 
-## Opção B — Cloudflare Tunnel (URL pública, sem abrir porta) 🌐
+## Opção B — Cloudflare Quick Tunnel Embutido (URL pública instantânea com QR Code) 🌐⚡
 
-Se quiser um endereço público (ex.: `musica.suadominio.com`) que funciona sem o
-app Tailscale no celular:
+O StremMusic agora possui integração nativa com o **Cloudflare Quick Tunnel**. Não é necessário criar conta na Cloudflare, registrar domínio nem instalar nada manualmente.
 
-1. Crie uma conta grátis no Cloudflare e adicione um domínio (seu ou gratuito).
-2. No PC: `cloudflared tunnel login` → `cloudflared tunnel create stremmusic` →
-   `cloudflared tunnel route dns stremmusic musica.suadominio.com` →
-   `cloudflared tunnel run stremmusic` apontando para `http://localhost:8787`.
-3. Teste rápido sem domínio: `cloudflared tunnel --url http://localhost:8787`
-   gera uma URL temporária `https://algo-aleatorio.trycloudflare.com`.
+1. **Como iniciar:**
+   - Dê dois cliques em **`run_tunnel.bat`** (ou passe o argumento `python app.py --tunnel`).
+   - Ou acesse o painel local em `http://127.0.0.1:8787/painel` e clique em **"Ligar Túnel Cloudflare (Rua/4G)"**.
+2. **O que o sistema faz automaticamente:**
+   - Baixa o binário oficial leve do `cloudflared` para a pasta `bin/` se ele ainda não existir.
+   - Sobe o túnel seguro com terminação TLS/HTTPS válida (`https://*.trycloudflare.com`).
+   - Exibe no terminal e no `/painel` o **QR Code** de pareamento com a chave criptográfica (`?sk=...`).
+   - Passa os cabeçalhos de áudio HTTP 206 `Range` perfeitamente para permitir avançar/retroceder na música.
+3. **No Celular (4G/5G ou Wi-Fi externo):**
+   - Aponte a câmera do celular para o QR Code gerado no monitor.
+   - O webapp abrirá com HTTPS seguro e autenticação automática.
+   - O aplicativo pode ser instalado na tela de início via **PWA** ("Adicionar à tela de início" / "Instalar App"), funcionando em tela cheia com reprodução em segundo plano.
 
-⚠️ **ATENÇÃO**: com URL pública você **precisa** ligar a proteção. O app tem duas
-camadas (veja `deploy/README.md`):
-
-- **`APP_TOKEN`** (variável de ambiente) — exige senha em `/api/*` **e** em
-  `/downloads/*`; o frontend pede a senha na primeira visita e guarda no cookie.
-- **Fechadura por QR** — no PC, abra `http://127.0.0.1:8787/painel` e ligue; o
-  celular pareado entra pelo QR e fica com cookie de 1 ano. Quem não pareou vê
-  a página de bloqueio.
-
-Sem uma delas, **qualquer pessoa** que descobrir o endereço usa sua banda, baixa
-músicas no seu disco e lê suas playlists. Para uso só seu, a Opção A continua
-mais simples — não expõe nada.
+⚠️ **Dica de Segurança**: A "fechadura" do `/painel` garante que apenas os celulares que escanearam seu QR Code ou possuem a chave de pareamento tenham acesso às músicas e buscas. Se quiser proteção extra global, defina a variável `APP_TOKEN`.
 
 ---
 

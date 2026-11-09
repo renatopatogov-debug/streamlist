@@ -3088,7 +3088,17 @@ if (inStremApp) {
 
 // ---------- Instalação do PWA (banner nativo do navegador) ----------
 let _bipEvt = null;
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); _bipEvt = e; });
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _bipEvt = e;
+  try {
+    const bi = $('#btn-install');
+    if (bi && !window.matchMedia('(display-mode: standalone)').matches) {
+      bi.style.display = '';
+      bi.onclick = () => { _bipEvt.prompt(); _bipEvt = null; bi.style.display = 'none'; };
+    }
+  } catch {}
+});
 
 // Celular deitado com música tocando → player em tela cheia (como apps nativos)
 const _mqLand = window.matchMedia('(orientation: landscape) and (max-height: 480px)');
@@ -3508,6 +3518,12 @@ const _tabScroll = {};
   updatePrevNext();
   refreshOfflineIds();
   loadTab();
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .catch(err => console.debug('SW reg fail:', err));
+    });
+  }
 })();
 </script>
 </body>
