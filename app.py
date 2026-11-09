@@ -530,6 +530,44 @@ _LOCKED_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   </form>
 </div></body></html>"""
 
+def _get_user_by_token(token: str) -> dict | None:
+    """Busca o perfil do usuário pelo seu token exclusivo de login/QR."""
+    if not token:
+        return None
+    token = str(token).strip()
+    with db() as con:
+        r = con.execute("SELECT id, name, token, is_admin FROM users WHERE token=?", (token,)).fetchone()
+        if r:
+            try:
+                con.execute("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", (r["id"],))
+            except Exception:
+                pass
+            return dict(r)
+        if _safe_eq(token, _pair_key()):
+            r1 = con.execute("SELECT id, name, token, is_admin FROM users WHERE id=1").fetchone()
+            if r1:
+                return dict(r1)
+    return None
+
+def _current_user(request: Request) -> dict:
+    """Retorna o perfil do usuário atual autenticado na requisição (ou Usuário 1 como fallback)."""
+    u = getattr(request.state, "user", None)
+    if isinstance(u, dict) and u.get("id"):
+        return u
+    token = request.query_params.get("sk") or request.cookies.get("sk")
+    if token:
+        found = _get_user_by_token(token)
+        if found:
+            request.state.user = found
+            return found
+    with db() as con:
+        r = con.execute("SELECT id, name, token, is_admin FROM users ORDER BY id ASC LIMIT 1").fetchone()
+        if r:
+            found = dict(r)
+            request.state.user = found
+            return found
+    return {"id": 1, "name": "Principal (Admin)", "token": _pair_key(), "is_admin": 1}
+
 _PUBLIC_PWA_PATHS = {
     "/manifest.webmanifest", "/sw.js", "/favicon.ico",
     "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"
@@ -550,20 +588,39 @@ async def _pair_guard(request: Request, call_next):
             return Response("Painel disponível só no PC do dono (localhost).",
                             status_code=403, media_type="text/plain; charset=utf-8")
         return await call_next(request)
-    if path in _PUBLIC_PWA_PATHS or not SETTINGS.get("pairing_required") or local:
-        return await call_next(request)
-    key = _pair_key()
-    sk = request.query_params.get("sk")
-    if sk and _safe_eq(sk, key):  # 1º acesso pareado: grava o cookie e segue
-        resp = await call_next(request)
+    # Identifica o perfil do usuário por token de link (?sk=...) ou cookie
+    sk_param = request.query_params.get("sk")
+    sk_cookie = request.cookies.get("sk")
+    matched_user = None
+
+    if sk_param:
+        matched_user = _get_user_by_token(sk_param)
+    elif sk_cookie:
+        matched_user = _get_user_by_token(sk_cookie)
+
+    if matched_user:
+        request.state.user = matched_user
+    elif local:
+        with db() as con:
+            r1 = con.execute("SELECT id, name, token, is_admin FROM users ORDER BY id ASC LIMIT 1").fetchone()
+            if r1:
+                request.state.user = dict(r1)
+
+    # Verificação de bloqueio se a fechadura estiver ativada
+    if not (path in _PUBLIC_PWA_PATHS or not SETTINGS.get("pairing_required") or local):
+        if not getattr(request.state, "user", None):
+            return HTMLResponse(_LOCKED_HTML, status_code=403)
+
+    resp = await call_next(request)
+
+    # Grava o cookie se o usuário veio por link com token (?sk=...)
+    if sk_param and matched_user:
         try:
-            resp.set_cookie("sk", key, max_age=60 * 60 * 24 * 365, samesite="lax", httponly=True)
+            resp.set_cookie("sk", matched_user["token"], max_age=60 * 60 * 24 * 365, samesite="lax", httponly=True)
         except Exception:
             pass
-        return resp
-    if _safe_eq(request.cookies.get("sk") or "", key):
-        return await call_next(request)
-    return HTMLResponse(_LOCKED_HTML, status_code=403)
+
+    return resp
 
 _PAINEL_CSS = """
   *{box-sizing:border-box;margin:0;padding:0}
@@ -613,6 +670,31 @@ _PAINEL_CSS = """
   @keyframes sp{to{transform:rotate(360deg)}}
   .foot{margin-top:28px;padding-top:18px;border-top:1px solid rgba(255,255,255,.05);font-size:12.5px;color:#64748b;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
   a{color:#38bdf8;text-decoration:none}
+  .users-box{background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.07);border-radius:22px;padding:22px 24px;margin-bottom:28px}
+  .users-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  .user-add-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .user-add-form input{background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:#fff;padding:10px 14px;font-size:13px;width:240px;outline:none;font-family:inherit}
+  .user-add-form input:focus{border-color:#38bdf8}
+  .users-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+  .u-card{background:rgba(2,6,23,.6);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px;display:flex;flex-direction:column;justify-content:space-between;gap:12px}
+  .u-card.admin{border-color:rgba(56,189,248,.35);background:linear-gradient(180deg,rgba(14,58,84,.25),rgba(2,6,23,.6))}
+  .u-top{display:flex;align-items:center;gap:12px}
+  .u-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(56,189,248,.25)}
+  .u-meta{flex:1;min-width:0}
+  .u-name{font-size:14.5px;font-weight:700;color:#fff;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .u-badge{font-size:10px;padding:2px 8px;border-radius:99px;font-weight:700;text-transform:uppercase}
+  .u-badge.adm{background:rgba(56,189,248,.2);color:#38bdf8;border:1px solid rgba(56,189,248,.4)}
+  .u-badge.usr{background:rgba(255,255,255,.06);color:#94a3b8}
+  .u-seen{font-size:11.5px;color:#64748b;margin-top:2px}
+  .u-links{display:flex;flex-direction:column;gap:6px}
+  .u-link{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06);border-radius:9px;padding:7px 10px;cursor:pointer;transition:.15s}
+  .u-link:hover{border-color:#38bdf8;background:rgba(0,0,0,.55)}
+  .u-link-type{font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:2px}
+  .u-link-url{font-family:ui-monospace,monospace;font-size:11px;color:#cbd5e1;word-break:break-all}
+  .u-actions{display:flex;align-items:center;gap:6px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05);flex-wrap:wrap}
+  .btn-sm{padding:6px 12px;font-size:11.5px;border-radius:9px}
+  .btn-del{background:rgba(239,68,68,.1);color:#fca5a5;border:1px solid rgba(239,68,68,.25)}
+  .btn-del:hover{background:rgba(239,68,68,.2);border-color:#f87171}
 """
 
 @app.get("/painel", response_class=HTMLResponse)
@@ -620,55 +702,87 @@ def painel(request: Request):
     port = request.url.port or 80
     key = _pair_key()
     on = bool(SETTINGS.get("pairing_required"))
-    cards = []
     cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
     cf_connecting = cf_on and not _CF_TUNNEL_URL
-    if _CF_TUNNEL_URL:
-        cf_url = f"{_CF_TUNNEL_URL}/?sk={key}"
-        cf_qr = _qr_svg(cf_url)
-        cf_qr_html = (f"<div class='qr'>{cf_qr}</div>"
-                      "<div class='hint'>📷 Aponte a câmera do celular — abre direto no navegador com HTTPS e opção de instalar o app (PWA)</div>"
-                      if cf_qr else "")
-        cards.append(
-            "<div class='card cf'>"
-            "<div class='tag'>☁️ Cloudflare Quick Tunnel · 4G/5G sem VPN</div>"
-            "<div class='ip'>Acesso na Rua (HTTPS)</div>"
-            f"<div class='url' title='Clique para copiar' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">{cf_url}</div>"
-            + cf_qr_html +
-            "</div>"
-        )
-    elif cf_on:
-        cards.append(
-            "<div class='card cf'>"
-            "<div class='tag'>☁️ Cloudflare Quick Tunnel</div>"
-            "<div class='ip'><span class='spin'></span>Conectando…</div>"
-            "<div class='hint' style='text-align:left;margin-top:6px'>Negociando link HTTPS com a Cloudflare. Esta página atualizará sozinha em instantes…</div>"
-            "</div>"
-        )
-    for ip in _candidate_ips():
-        tailscale = ip.startswith("100.")
-        tag = "Tailscale · VPN P2P" if tailscale else "Rede Local · Mesmo Wi-Fi"
-        hint = ("Requer Tailscale ativo no PC e no celular" if tailscale
-                else "📷 Aponte a câmera do celular conectado no mesmo Wi-Fi")
-        url = f"http://{ip}:{port}/?sk={key}"
-        qr = _qr_svg(url)
-        qr_html = ("<div class='qr'>" + qr + "</div><div class='hint'>" + hint + "</div>"
-                   if qr else
-                   "<div class='hint'>QR indisponível: rode <b>pip install qrcode</b></div>")
-        cards.append(
-            "<div class='card'><div class='tag'>" + tag + "</div>"
-            "<div class='ip'>" + ip + ":" + str(port) + "</div>"
-            "<div class='url' title='Clique para copiar' onclick=\"this.dataset.c='1';navigator.clipboard.writeText(this.textContent)\">" + url + "</div>"
-            + qr_html + "</div>")
+    primary_ip = _candidate_ips()[0] if _candidate_ips() else "127.0.0.1"
 
-    btn = ("<button class='ghost' onclick=\"fetch('/painel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
-           + ("Destrancar servidor" if on else "Trancar (só pareados)")
-           + "</button>")
-    badge = ("<span class='badge on'>🔒 Trancado · só pareados</span>" if on
-             else "<span class='badge off'>🔓 Aberto na rede local</span>")
-    cf_btn = ("<button class='" + ("ghost" if cf_on else "") + "' onclick=\"this.disabled=true;this.textContent='Aguarde…';fetch('/painel/tunnel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
-              + ("Desligar Túnel" if cf_on else "☁️ Ligar Túnel Cloudflare (4G/5G)")
-              + "</button>")
+    with db() as con:
+        users = [dict(r) for r in con.execute(
+            "SELECT id, name, token, created_at, last_seen, is_admin FROM users ORDER BY is_admin DESC, id ASC"
+        ).fetchall()]
+
+    user_cards = []
+    for u in users:
+        uid = u["id"]
+        uname = u["name"]
+        utok = u["token"]
+        is_adm = bool(u.get("is_admin"))
+        initial = (uname[:1] or "U").upper()
+        seen = u.get("last_seen")
+        seen_txt = f"Visto em {seen[:16]}" if seen else "Nunca conectou"
+        badge = "<span class='u-badge adm'>Admin</span>" if is_adm else "<span class='u-badge usr'>Convidado</span>"
+
+        cf_link = f"{_CF_TUNNEL_URL}/?sk={utok}" if _CF_TUNNEL_URL else None
+        local_link = f"http://{primary_ip}:{port}/?sk={utok}"
+        qr_target = cf_link or local_link
+        qr_svg = _qr_svg(qr_target) or "<div class='hint'>QR indisponível</div>"
+
+        links_html = ""
+        if cf_link:
+            links_html += (
+                f'<div class="u-link" title="Clique para copiar link da rua" onclick="navigator.clipboard.writeText(\'{cf_link}\');this.querySelector(\x27.u-link-url\x27).textContent=\x27Link copiado ✓\x27;">'
+                f'<span class="u-link-type">☁️ Link na Rua (4G/5G)</span>'
+                f'<div class="u-link-url">{cf_link}</div></div>'
+            )
+        links_html += (
+            f'<div class="u-link" title="Clique para copiar link local" onclick="navigator.clipboard.writeText(\'{local_link}\');this.querySelector(\x27.u-link-url\x27).textContent=\x27Link copiado ✓\x27;">'
+            f'<span class="u-link-type">📶 Link no Wi-Fi</span>'
+            f'<div class="u-link-url">{local_link}</div></div>'
+        )
+
+        del_btn = ""
+        if not is_adm:
+            del_btn = (
+                f'<form method="POST" action="/painel/users/{uid}/delete" style="display:inline" '
+                f'onsubmit="return confirm(\x27Excluir o usuário {uname} e todos os seus favoritos/histórico?\x27);">'
+                f'<button type="submit" class="ghost btn-sm btn-del">🗑️ Excluir</button></form>'
+            )
+
+        admin_cls = 'admin' if is_adm else ''
+        u_card = (
+            f"<div class='u-card {admin_cls}'>"
+            f"<div class='u-top'>"
+            f"<div class='u-avatar'>{initial}</div>"
+            f"<div class='u-meta'><div class='u-name' title='{uname}'>{uname} {badge}</div><div class='u-seen'>{seen_txt}</div></div>"
+            f"</div>"
+            f"<div class='u-links'>{links_html}</div>"
+            f"<div class='qr'>{qr_svg}</div>"
+            f"<div class='hint'>📷 Aponte a câmera do celular de <b>{uname}</b></div>"
+            f"<div class='u-actions'>"
+            f"<button class='ghost btn-sm' onclick=\"navigator.clipboard.writeText('{qr_target}');this.textContent='Copiado ✓';\">📋 Copiar Link</button>"
+            f"<form method='POST' action='/painel/users/{uid}/rekey' style='display:inline'>"
+            f"<button type='submit' class='ghost btn-sm' title='Regera a chave de acesso deste usuário e desloga aparelhos antigos'>🔄 Renovar QR</button></form>"
+            f"{del_btn}"
+            f"</div>"
+            f"</div>"
+        )
+        user_cards.append(u_card)
+
+    btn = (
+        "<button class='ghost' onclick=\"fetch('/painel/toggle',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">"
+        + ("Destrancar servidor" if on else "Trancar (só pareados)")
+        + "</button>"
+    )
+    badge_lock = (
+        "<span class='badge on'>🔒 Trancado · só pareados</span>" if on
+        else "<span class='badge off'>🔓 Aberto na rede local</span>"
+    )
+    cf_cls = "ghost" if cf_on else ""
+    cf_btn = (
+        f"<button class='{cf_cls}' onclick=\"this.disabled=true;this.textContent='Aguarde…';fetch('/painel/tunnel/toggle',{{method:'POST'}}).then(r=>r.json()).then(()=>location.reload())\">"
+        + ("Desligar Túnel" if cf_on else "☁️ Ligar Túnel Cloudflare (4G/5G)")
+        + "</button>"
+    )
     cf_badge = ("<span class='badge cf-on'>☁️ Túnel Ativo</span>" if _CF_TUNNEL_URL
                 else ("<span class='badge cf-on'><span class='spin' style='width:10px;height:10px;border-width:1.5px;margin-right:5px'></span>Conectando…</span>" if cf_on
                       else "<span class='badge cf-off'>Desligado</span>"))
@@ -685,28 +799,34 @@ def painel(request: Request):
         "<div class='wrap'>"
         "<div class='top'>"
         "<div class='brand'><div class='logo'>▶</div><div><h1>Strem<span>Music</span> · Host</h1>"
-        "<p class='sub'>Painel local de conexão e pareamento de dispositivos</p></div></div>"
+        "<p class='sub'>Painel de gerenciamento de usuários, conexões e QR Codes</p></div></div>"
         f"<a class='btn-open' href='http://127.0.0.1:{port}/'>↗ Abrir Player no PC</a>"
         "</div>"
         "<div class='controls-grid'>"
         "<div class='ctrl-card'>"
         "<div><div class='ctrl-head'><span class='ctrl-title'>Acesso na Rua (Cloudflare 4G/5G)</span>" + cf_badge + "</div>"
-        "<p class='ctrl-desc'>Gera um link HTTPS gratuito (trycloudflare.com) sem abrir portas no roteador e sem precisar de aplicativos extras.</p></div>"
+        "<p class='ctrl-desc'>Gera link HTTPS seguro (trycloudflare.com). Ao ligar, os QR Codes dos usuários atualizam automaticamente para a URL da rua.</p></div>"
         "<div class='ctrl-foot'>" + cf_btn + "</div>"
         "</div>"
         "<div class='ctrl-card'>"
-        "<div><div class='ctrl-head'><span class='ctrl-title'>Segurança & Pareamento</span>" + badge + "</div>"
-        "<p class='ctrl-desc'>Quando trancado, apenas celulares que leram o QR Code (ou possuem a chave) entram no servidor.</p></div>"
-        "<div class='ctrl-foot'>" + btn
-        + "<button class='ghost' onclick=\"fetch('/painel/rekey',{method:'POST'}).then(r=>r.json()).then(()=>location.reload())\">Trocar chave</button>"
-        + f"<span class='key-pill' title='Clique para copiar a chave' onclick=\"navigator.clipboard.writeText('{key}')\">chave: <b>{key}</b></span>"
-        "</div></div>"
+        "<div><div class='ctrl-head'><span class='ctrl-title'>Fechadura de Segurança</span>" + badge_lock + "</div>"
+        "<p class='ctrl-desc'>Quando trancado, apenas dispositivos que escanearam o QR Code de um dos usuários cadastrados conseguem acessar.</p></div>"
+        "<div class='ctrl-foot'>" + btn + "</div></div>"
         "</div>"
-        "<div class='sect-label'>Cartões de Conexão (Escaneie com a câmera do celular)</div>"
-        "<div class='grid'>" + "".join(cards) + "</div>"
+        "<div class='users-box'>"
+        "<div class='users-head'>"
+        "<div><div class='ctrl-title'>👥 Usuários & Perfis (Logins com QR Code Exclusivo)</div>"
+        "<p class='ctrl-desc' style='margin-top:2px'>Cada usuário tem seu próprio login. Os favoritos, histórico e playlists são separados para cada pessoa.</p></div>"
+        "<form method='POST' action='/painel/users' class='user-add-form'>"
+        "<input name='name' placeholder='Nome do amigo / cômodo…' maxlength='35' required autocomplete='off'>"
+        "<button type='submit'>＋ Criar Novo Login &amp; QR Code</button>"
+        "</form>"
+        "</div>"
+        "<div class='users-grid'>" + "".join(user_cards) + "</div>"
+        "</div>"
         "<div class='foot'>"
-        f"<span>Player local: <a href='http://127.0.0.1:{port}/'>http://127.0.0.1:{port}/</a></span>"
-        "<span>No celular: abra pelo QR Code e escolha <b>Adicionar à tela inicial</b> para instalar o PWA</span>"
+        f"<span>Player no PC: <a href='http://127.0.0.1:{port}/'>http://127.0.0.1:{port}/</a></span>"
+        "<span>Para instalar o PWA: abra a câmera no celular, escaneie o QR Code e toque em <b>Adicionar à tela inicial</b></span>"
         "</div>"
         "</div>" + poll_script + "</body></html>")
 
@@ -739,6 +859,42 @@ def painel_rekey(request: Request):
     SETTINGS["pair_key"] = secrets.token_urlsafe(9)
     _save_settings()
     return {"pair_key": SETTINGS["pair_key"]}
+
+@app.post("/painel/users")
+async def painel_create_user(request: Request):
+    _check_csrf(request)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()[:40]
+    if not name:
+        raise HTTPException(400, "O nome do usuário não pode ser vazio")
+    tok = secrets.token_urlsafe(12)
+    with db() as con:
+        con.execute("INSERT INTO users (name, token, is_admin) VALUES (?, ?, 0)", (name, tok))
+    return RedirectResponse("/painel", status_code=303)
+
+@app.post("/painel/users/{uid}/rekey")
+def painel_rekey_user(uid: int, request: Request):
+    _check_csrf(request)
+    new_tok = secrets.token_urlsafe(12)
+    with db() as con:
+        con.execute("UPDATE users SET token=? WHERE id=?", (new_tok, uid))
+        if uid == 1:
+            SETTINGS["pair_key"] = new_tok
+            _save_settings()
+    return RedirectResponse("/painel", status_code=303)
+
+@app.post("/painel/users/{uid}/delete")
+def painel_delete_user(uid: int, request: Request):
+    _check_csrf(request)
+    if uid == 1:
+        raise HTTPException(400, "Não é permitido excluir o usuário principal/admin")
+    with db() as con:
+        con.execute("DELETE FROM favorites WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM history WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM playlist_items WHERE playlist_id IN (SELECT id FROM local_playlists WHERE user_id=?)", (uid,))
+        con.execute("DELETE FROM local_playlists WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM users WHERE id=?", (uid,))
+    return RedirectResponse("/painel", status_code=303)
 
 @app.post("/painel/tunnel/toggle")
 def painel_tunnel_toggle(request: Request):
@@ -781,9 +937,17 @@ def init_db():
         except Exception:
             pass
         con.executescript("""
-        CREATE TABLE IF NOT EXISTS favorites (video_id TEXT PRIMARY KEY, title TEXT, artist TEXT, thumbnail TEXT, added_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS history (video_id TEXT PRIMARY KEY, title TEXT, artist TEXT, thumbnail TEXT, played_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS local_playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen TEXT,
+            is_admin INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS favorites (user_id INTEGER NOT NULL DEFAULT 1, video_id TEXT NOT NULL, title TEXT, artist TEXT, thumbnail TEXT, added_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, video_id));
+        CREATE TABLE IF NOT EXISTS history (user_id INTEGER NOT NULL DEFAULT 1, video_id TEXT NOT NULL, title TEXT, artist TEXT, thumbnail TEXT, played_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, video_id));
+        CREATE TABLE IF NOT EXISTS local_playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL, UNIQUE(user_id, name));
         CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, video_id TEXT, title TEXT, artist TEXT, thumbnail TEXT, position INTEGER, PRIMARY KEY (playlist_id, video_id));
         CREATE TABLE IF NOT EXISTS stations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, seed_id TEXT, seed_title TEXT, seed_artist TEXT, seed_thumb TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS plays (video_id TEXT PRIMARY KEY, n INTEGER DEFAULT 0, last_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -792,6 +956,62 @@ def init_db():
             id TEXT PRIMARY KEY, file TEXT UNIQUE, title TEXT, artist TEXT,
             album TEXT, dur REAL, art TEXT, added TEXT DEFAULT CURRENT_TIMESTAMP);
         """)
+        # Garante usuário 1 (Principal / Admin)
+        u1 = con.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()
+        if not u1:
+            tok = ""
+            try:
+                sf = DATA / "settings.json"
+                if sf.exists():
+                    tok = json.loads(sf.read_text(encoding="utf-8")).get("pair_key") or ""
+            except Exception:
+                pass
+            if not tok:
+                tok = secrets.token_urlsafe(9)
+            con.execute("INSERT INTO users (id, name, token, is_admin) VALUES (1, 'Principal (Admin)', ?, 1)",
+                        (tok,))
+
+        # Migração suave de bases antigas para multi-usuário
+        fav_cols = [r[1] for r in con.execute("PRAGMA table_info(favorites)").fetchall()]
+        if "user_id" not in fav_cols:
+            con.execute("""CREATE TABLE IF NOT EXISTS favorites_v2 (
+                user_id INTEGER NOT NULL DEFAULT 1,
+                video_id TEXT NOT NULL,
+                title TEXT, artist TEXT, thumbnail TEXT,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, video_id)
+            )""")
+            con.execute("""INSERT OR IGNORE INTO favorites_v2 (user_id, video_id, title, artist, thumbnail, added_at)
+                           SELECT 1, video_id, title, artist, thumbnail, added_at FROM favorites""")
+            con.execute("DROP TABLE favorites")
+            con.execute("ALTER TABLE favorites_v2 RENAME TO favorites")
+
+        hist_cols = [r[1] for r in con.execute("PRAGMA table_info(history)").fetchall()]
+        if "user_id" not in hist_cols:
+            con.execute("""CREATE TABLE IF NOT EXISTS history_v2 (
+                user_id INTEGER NOT NULL DEFAULT 1,
+                video_id TEXT NOT NULL,
+                title TEXT, artist TEXT, thumbnail TEXT,
+                played_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, video_id)
+            )""")
+            con.execute("""INSERT OR IGNORE INTO history_v2 (user_id, video_id, title, artist, thumbnail, played_at)
+                           SELECT 1, video_id, title, artist, thumbnail, played_at FROM history""")
+            con.execute("DROP TABLE history")
+            con.execute("ALTER TABLE history_v2 RENAME TO history")
+
+        pl_cols = [r[1] for r in con.execute("PRAGMA table_info(local_playlists)").fetchall()]
+        if "user_id" not in pl_cols:
+            con.execute("""CREATE TABLE IF NOT EXISTS local_playlists_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                UNIQUE (user_id, name)
+            )""")
+            con.execute("""INSERT OR IGNORE INTO local_playlists_v2 (id, user_id, name)
+                           SELECT id, 1, name FROM local_playlists""")
+            con.execute("DROP TABLE local_playlists")
+            con.execute("ALTER TABLE local_playlists_v2 RENAME TO local_playlists")
         # migração suave: ano e gênero das faixas importadas (colunas novas)
         for col, typ in (("year", "INTEGER DEFAULT 0"), ("genre", "TEXT DEFAULT ''")):
             try:
@@ -2943,51 +3163,80 @@ def clients_reset():
     print("🩺 saúde dos clients RESETADA pelo painel — todos voltam à disputa")
     return {"ok": True, "cleared": n, "bad_clients_cleared": b}
 
-# ---------- Favoritos ----------
+# ---------- Perfil & Sessão ----------
+@app.get("/api/me")
+def api_me(request: Request):
+    u = _current_user(request)
+    adm = bool(u.get("is_admin"))
+    return {
+        "ok": True,
+        "id": u["id"],
+        "name": u["name"],
+        "isAdmin": adm,
+        "is_admin": adm,
+        "user": {"id": u["id"], "name": u["name"], "is_admin": adm}
+    }
+
+@app.post("/api/logout")
+def api_logout():
+    resp = Response(json.dumps({"ok": True}), media_type="application/json")
+    resp.delete_cookie("sk")
+    return resp
+
+# ---------- Favoritos (isolados por usuário) ----------
 @app.get("/api/favorites")
-def list_favorites():
+def list_favorites(request: Request):
+    u = _current_user(request)
     with db() as con:
-        return [track_row(r) for r in con.execute("SELECT * FROM favorites ORDER BY added_at DESC")]
+        return [track_row(r) for r in con.execute(
+            "SELECT video_id, title, artist, thumbnail, added_at FROM favorites WHERE user_id=? ORDER BY added_at DESC",
+            (u["id"],))]
 
 @app.post("/api/favorites/{video_id}")
-def add_favorite(video_id: str, title: str = "", artist: str = "", thumbnail: str = ""):
+def add_favorite(video_id: str, request: Request, title: str = "", artist: str = "", thumbnail: str = ""):
+    u = _current_user(request)
     with db() as con:
-        con.execute("INSERT OR REPLACE INTO favorites VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
-                    (video_id, title, artist, thumbnail))
+        con.execute("INSERT OR REPLACE INTO favorites (user_id, video_id, title, artist, thumbnail, added_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                    (u["id"], video_id, title, artist, thumbnail))
     return {"ok": True}
 
 @app.delete("/api/favorites/{video_id}")
-def del_favorite(video_id: str):
+def del_favorite(video_id: str, request: Request):
+    u = _current_user(request)
     with db() as con:
-        con.execute("DELETE FROM favorites WHERE video_id=?", (video_id,))
+        con.execute("DELETE FROM favorites WHERE user_id=? AND video_id=?", (u["id"], video_id))
     return {"ok": True}
 
-# ---------- Histórico ----------
+# ---------- Histórico (isolado por usuário) ----------
 @app.get("/api/history")
-def get_history():
+def get_history(request: Request):
+    u = _current_user(request)
     with db() as con:
-        return [track_row(r) for r in con.execute("SELECT * FROM history ORDER BY played_at DESC LIMIT 100")]
+        return [track_row(r) for r in con.execute(
+            "SELECT video_id, title, artist, thumbnail, played_at FROM history WHERE user_id=? ORDER BY played_at DESC LIMIT 100",
+            (u["id"],))]
 
 @app.post("/api/history/{video_id}")
-def add_history(video_id: str, title: str = "", artist: str = "", thumbnail: str = ""):
+def add_history(video_id: str, request: Request, title: str = "", artist: str = "", thumbnail: str = ""):
+    u = _current_user(request)
     with db() as con:
-        con.execute("INSERT OR REPLACE INTO history VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
-                    (video_id, title, artist, thumbnail))
+        con.execute("INSERT OR REPLACE INTO history (user_id, video_id, title, artist, thumbnail, played_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                    (u["id"], video_id, title, artist, thumbnail))
     return {"ok": True}
 
 @app.delete("/api/history")
-def clear_history():
-    """Apaga o histórico inteiro (apontamento do Argon: só existia GET/POST)."""
+def clear_history(request: Request):
+    u = _current_user(request)
     with db() as con:
-        n = con.execute("SELECT COUNT(*) c FROM history").fetchone()["c"]
-        con.execute("DELETE FROM history")
+        n = con.execute("SELECT COUNT(*) c FROM history WHERE user_id=?", (u["id"],)).fetchone()["c"]
+        con.execute("DELETE FROM history WHERE user_id=?", (u["id"],))
     return {"ok": True, "removed": int(n or 0)}
 
 @app.delete("/api/history/{video_id}")
-def delete_history_item(video_id: str):
-    """Remove UM item do histórico (o registro, não os dados aprendidos de plays/next_map)."""
+def delete_history_item(video_id: str, request: Request):
+    u = _current_user(request)
     with db() as con:
-        cur = con.execute("DELETE FROM history WHERE video_id=?", (video_id,))
+        cur = con.execute("DELETE FROM history WHERE user_id=? AND video_id=?", (u["id"], video_id))
     return {"ok": True, "removed": max(0, cur.rowcount or 0)}
 
 # ---------- Continuar ouvindo (o que o cache inteligente APRENDEU) ----------
@@ -3026,27 +3275,33 @@ def smart_next(video_id: str, limit: int = Query(8, ge=1, le=20)):
         raise HTTPException(500, _friendly_error(e))
     return {"seed": video_id, "tracks": out}
 
-# ---------- Playlists locais ----------
+# ---------- Playlists locais (isoladas por usuário) ----------
 @app.get("/api/playlists")
-def list_playlists():
+def list_playlists(request: Request):
+    u = _current_user(request)
     with db() as con:
-        playlists = [row(r) for r in con.execute("SELECT * FROM local_playlists ORDER BY name")]
+        playlists = [row(r) for r in con.execute("SELECT id, name FROM local_playlists WHERE user_id=? ORDER BY name", (u["id"],))]
         for p in playlists:
             p["items"] = [track_row(r) for r in con.execute(
                 "SELECT * FROM playlist_items WHERE playlist_id=? ORDER BY position", (p["id"],))]
         return playlists
 
 @app.post("/api/playlists")
-def create_playlist(name: str):
+def create_playlist(name: str, request: Request):
+    u = _current_user(request)
+    name = (name or "").strip()[:80]
+    if not name:
+        raise HTTPException(400, "o nome da playlist não pode ser vazio")
     with db() as con:
-        con.execute("INSERT OR IGNORE INTO local_playlists(name) VALUES (?)", (name,))
-        r = con.execute("SELECT id FROM local_playlists WHERE name=?", (name,)).fetchone()
+        con.execute("INSERT OR IGNORE INTO local_playlists(user_id, name) VALUES (?, ?)", (u["id"], name))
+        r = con.execute("SELECT id FROM local_playlists WHERE user_id=? AND name=?", (u["id"], name)).fetchone()
     return {"ok": True, "id": r["id"] if r else None}
 
 @app.delete("/api/playlists/{pid}")
-def delete_playlist(pid: int):
+def delete_playlist(pid: int, request: Request):
+    u = _current_user(request)
     with db() as con:
-        con.execute("DELETE FROM local_playlists WHERE id=?", (pid,))
+        con.execute("DELETE FROM local_playlists WHERE id=? AND (user_id=? OR ?=1)", (pid, u["id"], u.get("is_admin", 0)))
         con.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
     return {"ok": True}
 

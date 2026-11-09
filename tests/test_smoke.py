@@ -1,3 +1,4 @@
+import sqlite3
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -299,6 +300,128 @@ def _run():
                   _ProactorBasePipeTransport._call_connection_lost.__name__ == "_quiet_call_connection_lost")
     except Exception as e:
         check(f"falha nos testes de upload/asyncio: {e}", False)
+
+    print("\n9) sistema multi-usuário no painel (logins, QR codes e isolamento)")
+
+    try:
+
+        # 1. Usuário admin (padrão local) responde em /api/me
+
+        r_me1 = client.get("/api/me")
+
+        check("/api/me responde 200 para usuário local", r_me1.status_code == 200 and r_me1.json().get("ok"))
+
+        u1 = r_me1.json().get("user", {})
+
+        check("usuário local é admin", u1.get("is_admin") is True)
+
+
+
+        # 2. Criação de novo usuário pelo painel
+
+        r_new_u = client.post("/painel/users", data={"name": "Amigo Teste"}, follow_redirects=False)
+
+        check("POST /painel/users cria usuário e redireciona (303)", r_new_u.status_code == 303)
+
+
+
+        # 3. Busca token do novo usuário
+
+        with sqlite3.connect(A.DB) as db:
+
+            db.row_factory = sqlite3.Row
+            row_u2 = db.execute("SELECT id, name, token FROM users WHERE name = 'Amigo Teste'").fetchone()
+
+        check("usuário 'Amigo Teste' salvo no banco com token próprio", row_u2 is not None and len(row_u2["token"]) >= 8)
+
+        u2_id = row_u2["id"]
+
+        u2_tok = row_u2["token"]
+
+
+
+        # 4. Painel exibe QR Code e card de ambos os usuários
+
+        r_painel_users = client.get("/painel")
+
+        check("/painel exibe card de Amigo Teste", "Amigo Teste" in r_painel_users.text)
+
+        check("/painel contém link com token do amigo", f"?sk={u2_tok}" in r_painel_users.text)
+
+
+
+        # 5. Acesso com token do amigo autentica como Amigo Teste
+
+        r_me2 = client.get(f"/api/me?sk={u2_tok}")
+
+        check("GET /api/me?sk=... reconhece Amigo Teste", r_me2.status_code == 200 and r_me2.json().get("user", {}).get("name") == "Amigo Teste")
+
+        check("Amigo Teste não é admin", r_me2.json().get("user", {}).get("is_admin") is False)
+
+
+
+        # 6. Isolamento de favoritos entre usuários (dois aparelhos / clientes distintos)
+        client_amigo = TestClient(A.app)
+        client.cookies.clear()
+
+        client.delete("/api/favorites/vid_teste_admin")
+        client.delete("/api/favorites/vid_teste_amigo")
+        client.post("/api/favorites/vid_teste_admin?title=FaixaAdmin&artist=ArtistaAdmin")
+
+        client_amigo.delete(f"/api/favorites/vid_teste_admin?sk={u2_tok}")
+        client_amigo.delete(f"/api/favorites/vid_teste_amigo?sk={u2_tok}")
+        client_amigo.post(f"/api/favorites/vid_teste_amigo?title=FaixaAmigo&artist=ArtistaAmigo&sk={u2_tok}")
+
+        favs_admin = client.get("/api/favorites").json()
+        favs_amigo = client_amigo.get("/api/favorites").json()
+
+        vids_admin = [f.get("videoId") or f.get("video_id") for f in favs_admin]
+        vids_amigo = [f.get("videoId") or f.get("video_id") for f in favs_amigo]
+
+        check("favoritas do admin NÃO contém a faixa do amigo", "vid_teste_amigo" not in vids_admin and "vid_teste_admin" in vids_admin)
+        check("favoritas do amigo NÃO contém a faixa do admin", "vid_teste_admin" not in vids_amigo and "vid_teste_amigo" in vids_amigo)
+
+        # 7. Renovar QR Code (rekey)
+
+        r_rekey = client.post(f"/painel/users/{u2_id}/rekey", follow_redirects=False)
+
+        check("POST /painel/users/{id}/rekey responde 303", r_rekey.status_code == 303)
+
+        with sqlite3.connect(A.DB) as db:
+
+            db.row_factory = sqlite3.Row
+            row_rekeyed = db.execute("SELECT token FROM users WHERE id = ?", (u2_id,)).fetchone()
+
+        check("token do amigo mudou após rekey", row_rekeyed["token"] != u2_tok)
+
+
+
+        # 8. Excluir usuário e verificar limpeza em cascata
+
+        r_del = client.post(f"/painel/users/{u2_id}/delete", follow_redirects=False)
+
+        check("POST /painel/users/{id}/delete responde 303", r_del.status_code == 303)
+
+        with sqlite3.connect(A.DB) as db:
+
+            db.row_factory = sqlite3.Row
+            row_del = db.execute("SELECT id FROM users WHERE id = ?", (u2_id,)).fetchone()
+
+            favs_left = db.execute("SELECT COUNT(*) FROM favorites WHERE user_id = ?", (u2_id,)).fetchone()[0]
+
+        check("usuário removido do banco", row_del is None)
+
+        check("favoritas do usuário excluído removidas em cascata", favs_left == 0)
+
+
+
+        client.delete("/api/favorites/vid_teste_admin")
+
+    except Exception as e:
+
+        check(f"falha nos testes multi-usuário: {e}", False)
+
+
 
     print(f"\n{'='*60}\n  {OKS} passaram, {len(FAILS)} falharam")
     if FAILS:

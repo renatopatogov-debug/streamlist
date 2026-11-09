@@ -11,10 +11,11 @@
   "learn_next": true,
   "pairing_required": false,
   "pair_key": "4UHeZwFrqivD",
+  "cloudflare_tunnel": true,
   "ejs_needed": false,
   "client_ms": {
-    "android_vr": 8621,
-    "mweb": 8284,
-    "padrão": 7407
+    "android_vr": 6968,
+    "mweb": 7328,
+    "padrão": 7593
   }
 }
