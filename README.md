@@ -27,33 +27,22 @@
 
 ---
 
-## 🚀 Como Usar no Windows
+## 🚀 Como Usar no Windows (1-Click)
 
-### 1. Instalação Automática
-Clone o repositório ou baixe a pasta do projeto e execute:
+Basta baixar o repositório (ou a pasta da Release) e dar dois cliques no launcher unificado:
 ```cmd
-install.bat
+Iniciar.bat
 ```
-O script verifica o Python, instala dependências e configura opcionalmente o **FFmpeg** e o **Deno** via `winget`.
+O **`Iniciar.bat`** cuida de tudo sozinho:
+1. Verifica se o Python está presente (e auxilia a instalar caso falte).
+2. Instala automaticamente as bibliotecas na primeira vez que for aberto.
+3. Exibe um menu simples para você escolher como quer rodar:
+   - **Túnel Cloudflare (Rua 4G/5G + QR Code)**
+   - **Aplicativo Desktop (Janela nativa)**
+   - **Servidor Local (Wi-Fi de casa)**
+   - **Atualização rápida de componentes do YouTube**
 
-### 2. Inicialização
-
-* **Para usar no computador e na rede Wi-Fi local:**
-  ```cmd
-  run.bat
-  ```
-  Acesse no navegador: `http://127.0.0.1:8787`
-
-* **Para usar na rua pelo celular (4G/5G com Túnel Cloudflare):**
-  ```cmd
-  run_tunnel.bat
-  ```
-  O terminal exibirá a URL pública HTTPS e o QR Code para conectar pelo celular.
-
-* **Como aplicativo desktop de janela nativa:**
-  ```cmd
-  desktop.bat
-  ```
+*(Se preferir atalhos diretos, você também pode usar `run_tunnel.bat`, `run.bat` ou `desktop.bat`)*
 
 ---
 
