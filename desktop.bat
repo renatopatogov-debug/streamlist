@@ -11,6 +11,6 @@ REM pywebview faz parte da lista de dependências do install.bat
 python desktop.py
 if errorlevel 1 (
   echo.
-  echo  Falhou. Verifique: pip install pywebview
+  echo  Falhou. Verifique se o pywebview está instalado: pip install pywebview
   pause
 )

@@ -1,21 +1,17 @@
 {
   "cache_enabled": true,
-  "cache_limit_mb": 800,
+  "cache_limit_mb": 512,
   "prefetch_next": true,
-  "race_wave": 3,
-  "extract_timeout": 25,
-  "mp3_quality": "320",
-  "force_ipv4": true,
-  "use_cookies": true,
+  "race_wave": 2,
+  "extract_timeout": 15,
+  "mp3_quality": "192",
+  "force_ipv4": false,
+  "use_cookies": false,
   "smart_cache": true,
   "learn_next": true,
   "pairing_required": false,
-  "pair_key": "4UHeZwFrqivD",
-  "cloudflare_tunnel": true,
+  "pair_key": "",
+  "cloudflare_tunnel": false,
   "ejs_needed": false,
-  "client_ms": {
-    "android_vr": 6968,
-    "mweb": 7328,
-    "padrão": 7593
-  }
+  "client_ms": {}
 }

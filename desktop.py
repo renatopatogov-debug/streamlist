@@ -3,17 +3,13 @@
 """
 StremMusic — versão DESKTOP (janela própria, sem navegador)
 
-Abre a MESMA interface (static/index.html) dentro de uma janela nativa
-Windows via WebView2 (Edge). Mesma aparência, mesmos dados (metrolist.db,
-cache, downloads) — só muda a "casca": em vez do Chrome, uma janela de app.
+Abre a interface dentro de uma janela nativa Windows via WebView2 (Edge).
+Mesma aparência, mesmos dados (metrolist.db, cache, downloads).
 
 Uso:      python desktop.py     (ou desktop.bat)
-Depende:  pip install pywebview   (instalado pelo install.bat novo)
+Depende:  pip install pywebview
 
-Sem o pywebview, cai com elegância: abre no navegador padrão mesmo.
-
-Detalhe: no desktop o servidor escuta SÓ em 127.0.0.1 (o celular não acessa).
-Para compartilhar na rede (celular/TV), rode run.bat (HOST 0.0.0.0).
+Sem o pywebview instalado, abre automaticamente no navegador padrão.
 """
 import os
 import socket
@@ -21,21 +17,17 @@ import sys
 import threading
 import time
 
-# yt-dlp desatualizado é a causa nº1 de "o app parou de funcionar um dia":
-# no desktop, atualiza sozinho por padrão (desligue com AUTO_UPDATE_YTDLP=0)
 os.environ.setdefault("AUTO_UPDATE_YTDLP", "1")
 
 import uvicorn
-
-from app import app   # importa o backend inteiro (rotas, banco, cache, yt-dlp)
+from app import app, BASE
 
 PORT = int(os.environ.get("PORT", "8787"))
 URL = f"http://127.0.0.1:{PORT}"
 
 
 def _port_busy(port: int) -> bool:
-    """Já existe um StremMusic rodando nesta porta? (evita crash de porta dupla:
-    abrir o desktop com o run.bat ligado reaproveita o servidor que já existe)"""
+    """Verifica se já existe uma instância rodando nesta porta."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.4):
             return True
@@ -52,19 +44,19 @@ def main():
         deadline = time.time() + 20
         while not _port_busy(PORT):
             if time.time() > deadline or not threading.main_thread().is_alive():
-                print("⚠ O servidor não subiu — rode `pip install -r requirements.txt` e tente de novo.")
+                print("❌ O servidor não subiu — execute `pip install -r requirements.txt` e tente novamente.")
                 sys.exit(1)
             time.sleep(0.15)
-        print(f"  🎵 StremMusic Desktop — servidor em {URL}")
+        print(f"  🎵 StremMusic Desktop — servidor rodando em {URL}")
     else:
         server = None
-        print(f"  🎵 StremMusic Desktop — reaproveitando servidor já rodando em {URL}")
+        print(f"  🎵 StremMusic Desktop — conectando ao servidor já ativo em {URL}")
 
     try:
         import webview
     except ImportError:
         import webbrowser
-        print("  💡 pywebview não instalado — abrindo no navegador. Para janela nativa: pip install pywebview")
+        print("  ℹ️ pywebview não instalado — abrindo no navegador padrão.")
         webbrowser.open(URL)
         try:
             while True:
@@ -77,14 +69,10 @@ def main():
         return
 
     try:
-        webview.settings["ALLOW_DOWNLOADS"] = True   # botão "Salvar" da aba Downloads funciona na janela
+        webview.settings["ALLOW_DOWNLOADS"] = True
     except Exception:
         pass
-    # private_mode=False é ESSENCIAL: no modo privado o WebView não tem cache de
-    # disco (fontes/capas recarregavam da internet a cada interação = sensação de
-    # atraso), e o IndexedDB ficava em memória (offline do aparelho se perdia).
-    # storage_path garante que tudo persista junto aos dados do app.
-    from app import BASE
+
     webview.create_window(
         "StremMusic",
         URL,
@@ -94,7 +82,7 @@ def main():
     )
     webview.start(private_mode=False, storage_path=str(BASE / ".webdata"))
     if server:
-        server.should_exit = True   # janela fechou → desliga o servidor limpo
+        server.should_exit = True
 
 
 if __name__ == "__main__":

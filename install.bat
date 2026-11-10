@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM  StremMusic — instalador Windows
-REM  Uso: copie a pasta do app e execute  install.bat
+REM  Uso: execute install.bat na pasta do projeto
 REM ============================================================
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
@@ -74,7 +74,7 @@ echo  [4/5] Instalando dependencias Python...
 python -m pip install --upgrade pip >nul 2>&1
 python -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 (
-    echo  ERRO: falha ao instalar dependencias. Verifique sua internet.
+    echo  ERRO: falha ao instalar dependencias. Verifique sua conexao com a internet.
     pause
     exit /b 1
 )
@@ -86,16 +86,15 @@ echo  [5/5] Tudo pronto!
 echo.
 echo  =============================================
 echo    Como app de janela (desktop):  desktop.bat
-echo    Para rede/celular:             run.bat
-echo    Desktop abre:  janela própria (WebView2)
-echo    run.bat abre:  http://127.0.0.1:8787
+echo    Para rede local / celular:     run.bat
+echo    Para acesso na rua (4G/5G):    run_tunnel.bat
+echo    Painel do Host:                http://127.0.0.1:8787/painel
 echo  =============================================
 echo.
 echo  Dicas:
-echo   - Se acabou de instalar FFmpeg/Deno, FECHE E ABRA O TERMINAL
+echo   - Se acabou de instalar FFmpeg/Deno, REINICIE O TERMINAL
 echo   - Se o Firewall perguntar, autorize o Python (acesso na rede local)
-echo   - Primeira vez no desktop: a janela usa o WebView2 do Windows
-echo     (já vem no Windows 10/11; se faltar, a MS instala sozinho)
+echo   - Primeira vez no desktop: a janela usa o WebView2 do Windows (ja vem no Win 10/11)
 echo   - Se a busca/stream parar de funcionar um dia:
 echo       pip install -U yt-dlp ytmusicapi
 echo.
