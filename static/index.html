@@ -1421,25 +1421,39 @@ function renderQueuePanel() {
   if (active) active.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-// ---------- 🧠 Continuar ouvindo (o que o app aprendeu — rota /api/smart/next) ----------
+// ---------- 🧠 Continuar ouvindo (o que o app aprendeu + Rádio autoplay infinito) ----------
 async function smartContinue() {
   const seed = currentId || (queue[qIndex] && queue[qIndex].videoId);
   if (!seed) { toast('Toca alguma coisa primeiro — depois eu aprendo o que você põe depois 🧠'); return; }
   try {
     const d = await api('/api/smart/next/' + seed);
     const known = (d.tracks || []).filter(t => t.known && !queue.some(q => q.videoId === t.videoId));
-    if (!known.length) { toast('Ainda não aprendi o que vem depois dessa — ouve mais umas sequências 🧠'); return; }
-    const add = known.slice(0, 5).map(t => ({ videoId: t.videoId, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: '' }));
-    queue = queue.concat(add);
-    renderQueuePanel();
-    toast(`🧠 ${add.length} faixa${add.length !== 1 ? 's' : ''} do seu jeito na fila`);
+    if (known.length > 0) {
+      const add = known.slice(0, 5).map(t => ({ videoId: t.videoId, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: '' }));
+      queue = queue.concat(add);
+      renderQueuePanel();
+      toast(`🧠 ${add.length} faixa${add.length !== 1 ? 's' : ''} do seu jeito na fila`);
+    } else {
+      // Fallback amigável: se ainda não aprendeu sequências desta música, busca da Rádio
+      toast('🧠 Buscando músicas parecidas para continuar...');
+      const r = await api('/api/radio/' + seed);
+      const radioTracks = (r.tracks || []).filter(t => t.videoId && t.videoId !== seed && !queue.some(q => q.videoId === t.videoId));
+      if (!radioTracks.length) {
+        toast('Não encontrei mais faixas parecidas no momento 📻');
+        return;
+      }
+      const add = radioTracks.slice(0, 5).map(t => ({ videoId: t.videoId, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration || '' }));
+      queue = queue.concat(add);
+      renderQueuePanel();
+      toast(`📻 Adicionadas ${add.length} músicas parecidas na fila!`);
+    }
   } catch (e) { toast(e.message); }
 }
 
 let _smartBusy = false, _learnNext = null;   // memo do switch "Aprender o que vem depois"
 async function smartAutoContinue() {
-  // fila acabou e a faixa terminou: se "Aprender o que vem depois" estiver ligado,
-  // continua sozinho com a faixa que você MAIS costuma colocar depois dessa.
+  // Fila acabou e a faixa terminou: se "Aprender o que vem depois" estiver ligado,
+  // continua sozinho: 1º com as faixas aprendidas (next_map); 2º com a Rádio (autoplay infinito).
   if (_smartBusy || !currentId) return;
   _smartBusy = true;
   try {
@@ -1448,16 +1462,39 @@ async function smartAutoContinue() {
       catch { _learnNext = false; }
     }
     if (!_learnNext) return;
-    const d = await api('/api/smart/next/' + currentId);
-    const cand = (d.tracks || []).find(t => t.known && !queue.some(q => q.videoId === t.videoId));
-    if (!cand) return;
-    const t = { videoId: cand.videoId, title: cand.title, artist: cand.artist, thumbnail: cand.thumbnail, duration: '' };
-    queue = queue.concat([t]);
+
+    let nextTrack = null;
+    // 1º Nível: Tenta encontrar faixa aprendida com seu histórico
+    try {
+      const d = await api('/api/smart/next/' + currentId);
+      const cand = (d.tracks || []).find(t => t.known && !queue.some(q => q.videoId === t.videoId));
+      if (cand) {
+        nextTrack = { videoId: cand.videoId, title: cand.title, artist: cand.artist, thumbnail: cand.thumbnail, duration: '' };
+        toast(`🧠 Continuando com sua sequência: "${(cand.title || '').slice(0, 38)}"`);
+      }
+    } catch {}
+
+    // 2º Nível: Fallback para a Rádio (músicas similares para a reprodução nunca parar)
+    if (!nextTrack) {
+      try {
+        const r = await api('/api/radio/' + currentId);
+        const cand = (r.tracks || []).find(t => t.videoId && t.videoId !== currentId && !queue.some(q => q.videoId === t.videoId));
+        if (cand) {
+          nextTrack = { videoId: cand.videoId, title: cand.title, artist: cand.artist, thumbnail: cand.thumbnail, duration: cand.duration || '' };
+          toast(`📻 Continuando na rádio com "${(cand.title || '').slice(0, 38)}"`);
+        }
+      } catch {}
+    }
+
+    if (!nextTrack) return;
+    queue = queue.concat([nextTrack]);
     renderQueuePanel();
-    toast(`🧠 fila acabou — continuando com "${(cand.title || '').slice(0, 40)}"`);
-    play(t);
-  } catch {}
-  finally { setTimeout(() => { _smartBusy = false; }, 1500); }
+    play(nextTrack);
+  } catch (err) {
+    console.error('smartAutoContinue error:', err);
+  } finally {
+    setTimeout(() => { _smartBusy = false; }, 1500);
+  }
 }
 $('#btn-smart-q').onclick = smartContinue;
 
@@ -3103,8 +3140,8 @@ $('#now-img').onerror = function() {
 
 function updatePrevNext() {
   $('#btn-prev').disabled = qIndex <= 0;
-  $('#btn-next').disabled = qIndex < 0 || queue.length < 2
-    || (!isShuffle && repeatMode === 0 && qIndex >= queue.length - 1);
+  const canContinue = _learnNext !== false;
+  $('#btn-next').disabled = qIndex < 0 || (!canContinue && (queue.length < 2 || (!isShuffle && repeatMode === 0 && qIndex >= queue.length - 1)));
   $('#play-btn').disabled = currentId === null;
 }
 
@@ -3305,7 +3342,7 @@ $('#play-btn').onclick = () => {
   if (audio.paused) audio.play().catch(() => {});
   else audio.pause();
 };
-$('#btn-next').onclick = () => { const n = nextIndex(1); if (n >= 0 && queue[n]) play(queue[n]); };
+$('#btn-next').onclick = () => { const n = nextIndex(1); if (n >= 0 && queue[n]) play(queue[n]); else smartAutoContinue(); };
 $('#btn-prev').onclick = () => {
   if (audio.currentTime > 3) { audio.currentTime = 0; return; } // como no Spotify: volta ao início antes de trocar
   const n = nextIndex(-1);

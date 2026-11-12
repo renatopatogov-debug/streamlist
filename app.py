@@ -891,6 +891,7 @@ def painel_delete_user(uid: int, request: Request):
     with db() as con:
         con.execute("DELETE FROM favorites WHERE user_id=?", (uid,))
         con.execute("DELETE FROM history WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM next_map WHERE user_id=?", (uid,))
         con.execute("DELETE FROM playlist_items WHERE playlist_id IN (SELECT id FROM local_playlists WHERE user_id=?)", (uid,))
         con.execute("DELETE FROM local_playlists WHERE user_id=?", (uid,))
         con.execute("DELETE FROM users WHERE id=?", (uid,))
@@ -951,7 +952,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, video_id TEXT, title TEXT, artist TEXT, thumbnail TEXT, position INTEGER, PRIMARY KEY (playlist_id, video_id));
         CREATE TABLE IF NOT EXISTS stations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, seed_id TEXT, seed_title TEXT, seed_artist TEXT, seed_thumb TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS plays (video_id TEXT PRIMARY KEY, n INTEGER DEFAULT 0, last_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS next_map (prev_id TEXT, next_id TEXT, n INTEGER DEFAULT 0, PRIMARY KEY (prev_id, next_id));
+        CREATE TABLE IF NOT EXISTS next_map (
+            user_id INTEGER NOT NULL DEFAULT 1,
+            prev_id TEXT NOT NULL,
+            next_id TEXT NOT NULL,
+            title TEXT,
+            artist TEXT,
+            thumbnail TEXT,
+            n INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, prev_id, next_id)
+        );
         CREATE TABLE IF NOT EXISTS uploads (
             id TEXT PRIMARY KEY, file TEXT UNIQUE, title TEXT, artist TEXT,
             album TEXT, dur REAL, art TEXT, added TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -1012,6 +1023,24 @@ def init_db():
                            SELECT id, 1, name FROM local_playlists""")
             con.execute("DROP TABLE local_playlists")
             con.execute("ALTER TABLE local_playlists_v2 RENAME TO local_playlists")
+
+        nm_cols = [r[1] for r in con.execute("PRAGMA table_info(next_map)").fetchall()]
+        if "user_id" not in nm_cols:
+            con.execute("""CREATE TABLE IF NOT EXISTS next_map_v2 (
+                user_id INTEGER NOT NULL DEFAULT 1,
+                prev_id TEXT NOT NULL,
+                next_id TEXT NOT NULL,
+                title TEXT,
+                artist TEXT,
+                thumbnail TEXT,
+                n INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, prev_id, next_id)
+            )""")
+            con.execute("""INSERT OR IGNORE INTO next_map_v2 (user_id, prev_id, next_id, n)
+                           SELECT 1, prev_id, next_id, n FROM next_map""")
+            con.execute("DROP TABLE next_map")
+            con.execute("ALTER TABLE next_map_v2 RENAME TO next_map")
         # migração suave: ano e gênero das faixas importadas (colunas novas)
         for col, typ in (("year", "INTEGER DEFAULT 0"), ("genre", "TEXT DEFAULT ''")):
             try:
@@ -2082,7 +2111,7 @@ def _warm_worker():
 # next_map  → transições "quem costuma vir depois de quem" (aprendido com suas trocas de faixa)
 # sessão    → quanto o cache te poupou de YouTube agora
 _last_stream_lock = threading.Lock()
-_last_stream_id = None
+_user_last_stream: dict[int, tuple[str, float]] = {}   # uid -> (video_id, timestamp)
 _stats_lock = threading.Lock()
 _session_stats = {"cache": 0, "net": 0, "bytes": 0}
 
@@ -2097,25 +2126,39 @@ def _count_play(video_id: str):
     except Exception:
         pass
 
-def _bump_next(prev_id: str, next_id: str):
-    """Anota a transição prev→next (o que você costuma ouvir em seguida)."""
+def _bump_next(prev_id: str, next_id: str, user_id: int = 1, title: str = "", artist: str = "", thumbnail: str = ""):
+    """Anota a transição prev→next isolada por usuário, persistindo metadados duradouros."""
     try:
         with db() as con:
-            con.execute("""INSERT INTO next_map(prev_id, next_id, n) VALUES (?,?,1)
-                           ON CONFLICT(prev_id, next_id) DO UPDATE SET n = n + 1""",
-                        (prev_id, next_id))
+            if not title:
+                h = con.execute("SELECT title, artist, thumbnail FROM history WHERE user_id=? AND video_id=? LIMIT 1",
+                                (user_id, next_id)).fetchone()
+                if h:
+                    title, artist, thumbnail = h["title"] or "", h["artist"] or "", h["thumbnail"] or ""
+            con.execute("""INSERT INTO next_map(user_id, prev_id, next_id, title, artist, thumbnail, n, updated_at)
+                           VALUES (?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
+                           ON CONFLICT(user_id, prev_id, next_id) DO UPDATE SET
+                               n = n + 1,
+                               title = COALESCE(NULLIF(excluded.title, ''), next_map.title),
+                               artist = COALESCE(NULLIF(excluded.artist, ''), next_map.artist),
+                               thumbnail = COALESCE(NULLIF(excluded.thumbnail, ''), next_map.thumbnail),
+                               updated_at = CURRENT_TIMESTAMP""",
+                        (user_id, prev_id, next_id, title, artist, thumbnail))
     except Exception:
         pass
 
-def _smart_warm_after(video_id: str):
-    """Pré-guarda no cache o que costuma vir DEPOIS desta faixa — mesmo fora da fila."""
+def _smart_warm_after(video_id: str, user_id: int = 1):
+    """Pré-guarda no cache o que costuma vir DEPOIS desta faixa — priorizando o perfil do usuário."""
     if not SETTINGS.get("learn_next", True) or not SETTINGS.get("cache_enabled") \
             or not SETTINGS.get("prefetch_next", True):
         return
     try:
         with db() as con:
-            rows = con.execute("SELECT next_id FROM next_map WHERE prev_id=? ORDER BY n DESC LIMIT 6",
-                               (video_id,)).fetchall()
+            rows = con.execute("SELECT next_id FROM next_map WHERE user_id=? AND prev_id=? ORDER BY n DESC LIMIT 6",
+                               (user_id, video_id)).fetchall()
+            if not rows:
+                rows = con.execute("SELECT next_id FROM next_map WHERE prev_id=? ORDER BY n DESC LIMIT 6",
+                                   (video_id,)).fetchall()
     except Exception:
         return
     picked = 0
@@ -2763,12 +2806,19 @@ def stream(video_id: str, request: Request):
     # Cache inteligente: anota a transição "o que costuma ouvir depois desta" (o play
     # em si é contado só nas saídas bem-sucedidas, pra retry de erro não inflar)
     first_try = not retry
+    u = _current_user(request)
+    uid = int(u.get("id") or 1)
     if first_try:
-        global _last_stream_id
+        now = time.time()
         with _last_stream_lock:
-            prev_id, _last_stream_id = _last_stream_id, video_id
-        if prev_id and prev_id != video_id and VID_RE.match(prev_id):
-            _bump_next(prev_id, video_id)
+            prev_entry = _user_last_stream.get(uid)
+            _user_last_stream[uid] = (video_id, now)
+        if prev_entry:
+            prev_id, prev_ts = prev_entry
+            diff = now - prev_ts
+            # Skip-guard: só grava se a faixa anterior tocou por pelo menos 10s e não mais de 20 min (1200s)
+            if 10 <= diff <= 1200 and prev_id != video_id and VID_RE.match(prev_id):
+                _bump_next(prev_id, video_id, user_id=uid)
     # 1) música JÁ BAIXADA? toca direto do disco — zero YouTube, zero cache (Koel-style)
     if not retry:
         dl = _serve_from_download(video_id, rng)
@@ -2860,7 +2910,7 @@ def stream(video_id: str, request: Request):
             print(f"↪️ {video_id}: 302 direto ao googlevideo como último recurso (navegador tenta)")
             if first_try:
                 _count_play(video_id)
-                _smart_warm_after(video_id)
+                _smart_warm_after(video_id, user_id=uid)
             return RedirectResponse(url, status_code=302)
         extra = ("\n\n💡 O YouTube recusou o áudio nos clients disponíveis.\n"
                  "    Se persistir: USE_COOKIES=1 com um cookies.txt do navegador,"
@@ -2918,7 +2968,7 @@ def stream(video_id: str, request: Request):
         _count_play(video_id)
     _session_serve("net", int(passthrough.get("Content-Length") or 0))
     if first_try:
-        _smart_warm_after(video_id)
+        _smart_warm_after(video_id, user_id=uid)
     return StreamingResponse(iterate(), status_code=upstream.status_code, headers=passthrough)
 
 # ---------- Configurações (painel Config) ----------
@@ -3222,6 +3272,9 @@ def add_history(video_id: str, request: Request, title: str = "", artist: str = 
     with db() as con:
         con.execute("INSERT OR REPLACE INTO history (user_id, video_id, title, artist, thumbnail, played_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
                     (u["id"], video_id, title, artist, thumbnail))
+        if title:
+            con.execute("UPDATE next_map SET title=?, artist=?, thumbnail=? WHERE user_id=? AND next_id=? AND (title IS NULL OR title='')",
+                        (title, artist, thumbnail, u["id"], video_id))
     return {"ok": True}
 
 @app.delete("/api/history")
@@ -3241,34 +3294,51 @@ def delete_history_item(video_id: str, request: Request):
 
 # ---------- Continuar ouvindo (o que o cache inteligente APRENDEU) ----------
 @app.get("/api/smart/next/{video_id}")
-def smart_next(video_id: str, limit: int = Query(8, ge=1, le=20)):
+def smart_next(video_id: str, request: Request, limit: int = Query(8, ge=1, le=20)):
     """O que o app aprendeu que você costuma ouvir DEPOIS desta faixa (next_map,
-    alimentado pelas suas trocas de faixa reais). Título/artista vêm do histórico/
-    favoritos; sem metadado conhecido, a faixa volta com known=false e thumbnail
-    derivada do id (o frontend só enfileira as conhecidas)."""
+    alimentado pelas trocas de faixa reais isoladas por perfil). Retorna metadados duradouros."""
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
+    u = _current_user(request)
     try:
         with db() as con:
+            # 1. Busca primeiro no perfil do usuário atual
             rows = con.execute(
-                "SELECT next_id, n FROM next_map WHERE prev_id=? ORDER BY n DESC LIMIT ?",
-                (video_id, limit)).fetchall()
+                "SELECT next_id, title, artist, thumbnail, n FROM next_map WHERE user_id=? AND prev_id=? ORDER BY n DESC LIMIT ?",
+                (u["id"], video_id, limit)).fetchall()
+            # 2. Fallback para outros perfis locais caso o usuário atual ainda não tenha histórico dessa faixa
+            if not rows:
+                rows = con.execute(
+                    "SELECT next_id, title, artist, thumbnail, MAX(n) as n FROM next_map WHERE prev_id=? GROUP BY next_id ORDER BY n DESC LIMIT ?",
+                    (video_id, limit)).fetchall()
+
             out = []
             for r in rows:
                 nid = r["next_id"]
-                m = con.execute("SELECT title, artist, thumbnail FROM history WHERE video_id=?",
-                                (nid,)).fetchone()
-                if not m:
-                    m = con.execute("SELECT title, artist, thumbnail FROM favorites WHERE video_id=?",
-                                    (nid,)).fetchone()
-                m = dict(m) if m else {}
-                out.append({"videoId": nid, "n": int(r["n"] or 0),
-                            "title": m.get("title") or "", "artist": m.get("artist") or "",
-                            # capa pelo proxy local (mesmo padrão de search/radio —
-                            # gemini 3.8: o link direto i.ytimg.com quebrava offline
-                            # e com domínio do Google bloqueado)
-                            "thumbnail": m.get("thumbnail") or f"/api/thumb/{nid}",
-                            "known": bool(m.get("title"))})
+                title = r["title"] or ""
+                artist = r["artist"] or ""
+                thumb = r["thumbnail"] or ""
+                if not title:
+                    m = con.execute("SELECT title, artist, thumbnail FROM history WHERE user_id=? AND video_id=? LIMIT 1",
+                                    (u["id"], nid)).fetchone()
+                    if not m:
+                        m = con.execute("SELECT title, artist, thumbnail FROM history WHERE video_id=? LIMIT 1",
+                                        (nid,)).fetchone()
+                    if not m:
+                        m = con.execute("SELECT title, artist, thumbnail FROM favorites WHERE user_id=? AND video_id=? LIMIT 1",
+                                        (u["id"], nid)).fetchone()
+                    if m:
+                        title = m["title"] or ""
+                        artist = m["artist"] or ""
+                        thumb = m["thumbnail"] or ""
+                out.append({
+                    "videoId": nid,
+                    "n": int(r["n"] or 0),
+                    "title": title,
+                    "artist": artist,
+                    "thumbnail": thumb or f"/api/thumb/{nid}",
+                    "known": bool(title)
+                })
     except HTTPException:
         raise
     except Exception as e:

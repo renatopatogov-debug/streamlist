@@ -180,6 +180,13 @@ def _run():
         check("next_map aceita o que o 🧠 aprende", row is not None and row["n"] == 3)
         con.execute("DELETE FROM next_map WHERE prev_id=?", ("__test__",))
 
+    # Testa gravação inteligente com metadados duradouros e isolamento
+    A._bump_next("__prev_vid__", "__next_vid__", user_id=1, title="Música Futura", artist="Artista Top")
+    with A.db() as con:
+        row_bump = con.execute("SELECT title, artist, n FROM next_map WHERE user_id=1 AND prev_id=?", ("__prev_vid__",)).fetchone()
+        check("next_map guarda título e artista duradouros", row_bump is not None and row_bump["title"] == "Música Futura")
+        con.execute("DELETE FROM next_map WHERE prev_id=?", ("__prev_vid__",))
+
     print("\n5) pre-tests: EJS é PLANO B, ordem segue o que foi medido")
     sem = A._base_ydl_opts(ejs=False)
     com = A._base_ydl_opts(ejs=True)
