@@ -1,7 +1,9 @@
 // StremMusic Service Worker (PWA Shell Cache)
-const CACHE_NAME = 'stremmusic-shell-v3';
+const CACHE_NAME = 'stremmusic-shell-v5';
 const SHELL_ASSETS = [
   '/',
+  '/static/app.css',
+  '/static/app.js',
   '/manifest.webmanifest',
   '/icon-192.png',
   '/icon-512.png',
@@ -100,7 +102,7 @@ self.addEventListener('fetch', event => {
           }
           return new Response(
             '<!doctype html><meta charset="utf-8"><title>StremMusic Offline</title>' +
-            '<style>body{background:#020617;color:#f1f5f9;font-family:sans-serif;padding:30px;text-align:center}</style>' +
+            '<style>body{background:#09090b;color:#f4f4f5;font-family:-apple-system,sans-serif;padding:30px;text-align:center}</style>' +
             '<h1>StremMusic</h1><p>Conecte-se à internet uma vez para instalar a casca do app.</p>',
             { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
           );

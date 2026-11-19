@@ -78,7 +78,7 @@ def main():
         URL,
         width=1280, height=820,
         min_size=(940, 560),
-        background_color="#020617",
+        background_color="#09090b",
     )
     webview.start(private_mode=False, storage_path=str(BASE / ".webdata"))
     if server:

@@ -25,6 +25,7 @@ downloads/
 
 # Local credentials & secrets
 cookies.txt
+settings.json
 .env
 *.pem
 *.key

@@ -38,17 +38,20 @@ RUN pip install -r requirements-server.txt
 # sozinho no arranque e cai no modo script se isto não existir. Best-effort:
 # sem rede no build, a imagem ainda funciona (só sem PO Token).
 RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
-        /root/bgutil-ytdlp-pot-provider \
-    && cd /root/bgutil-ytdlp-pot-provider/server \
+        /opt/bgutil-ytdlp-pot-provider \
+    && cd /opt/bgutil-ytdlp-pot-provider/server \
     && (deno install >/dev/null 2>&1 || true) \
     && echo "provedor de PO Token baixado"
 
-# Código (dados ficam no volume /data, não na imagem)
-COPY app.py ./
+# Código e assets PWA (dados ficam no volume /data, não na imagem)
+COPY app.py pwa_assets.py manifest.webmanifest icon-192.png icon-512.png icon-maskable-512.png ./
 COPY static ./static
 
-# Pasta de dados: banco, configurações, cache, downloads e uploads.
-RUN mkdir -p /data && chmod 777 /data
+# Usuário não-root e pasta de dados
+RUN useradd -m -u 1000 -s /bin/sh stremmusic \
+    && mkdir -p /data \
+    && chown -R stremmusic:stremmusic /app /data /opt/bgutil-ytdlp-pot-provider
+USER stremmusic
 VOLUME ["/data"]
 
 EXPOSE 8787

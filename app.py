@@ -18,7 +18,9 @@ Playlist do YouTube/YT Music: cola o link (?list=…) na busca ou na aba Playlis
 para importar/adicionar; "Baixar tudo" cria downloads/playlists/<nome>/ e pré-baixa
 as próximas faixas no cache para a leitura sequencial não engasgar.
 """
-import os, sys, json, re, uuid, shutil, socket, sqlite3, time, threading, subprocess, datetime, random, secrets, ipaddress
+import os, sys, json, re, uuid, shutil, socket, sqlite3, time, threading, subprocess, datetime, random, secrets, ipaddress, html, logging
+
+logger = logging.getLogger("stremmusic")
 
 # Garante que o console Windows nunca quebre em cp1252 com emojis ou caracteres especiais
 if sys.platform == "win32":
@@ -64,6 +66,7 @@ from requests.adapters import HTTPAdapter
 from fastapi import (FastAPI, HTTPException, Query, Request, UploadFile, File)
 from fastapi.responses import (HTMLResponse, FileResponse, StreamingResponse,
                                Response, RedirectResponse)
+from starlette.concurrency import run_in_threadpool
 from ytmusicapi import YTMusic
 
 # ---- yt-dlp + plugin de PO Token: carga ÚNICA, à prova de corrida ----
@@ -95,7 +98,17 @@ _POT_PLUGIN_OK = _load_pot_plugin_once()
 # servidor, o Deno fica RODANDO com cache de token entre vídeos/processos —
 # medido nesta máquina: 10,2s para resolver a 1ª faixa contra 16,2s sem ele.
 # O provedor bgutil:http do plugin já procura 127.0.0.1:4416 sozinho.
-BGUTIL_SERVER_DIR = Path.home() / "bgutil-ytdlp-pot-provider" / "server"
+def _resolve_bgutil_dir() -> Path:
+    for cand in (
+        Path.home() / "bgutil-ytdlp-pot-provider" / "server",
+        Path("/opt/bgutil-ytdlp-pot-provider/server"),
+        Path("/root/bgutil-ytdlp-pot-provider/server"),
+    ):
+        if (cand / "src" / "main.ts").is_file():
+            return cand
+    return Path.home() / "bgutil-ytdlp-pot-provider" / "server"
+
+BGUTIL_SERVER_DIR = _resolve_bgutil_dir()
 _BGUTIL_SERVER_OK = False
 
 def _bgutil_ping() -> bool:
@@ -374,12 +387,9 @@ def _find_cloudflared() -> Path | None:
     if w:
         return Path(w)
     bin_name = _cloudflared_binary_name()
-    p1 = DATA / "bin" / bin_name
-    if p1.is_file():
-        return p1
-    p2 = BASE / bin_name
-    if p2.is_file():
-        return p2
+    for cand in (DATA / "bin" / bin_name, BASE / "bin" / bin_name, BASE / bin_name):
+        if cand.is_file():
+            return cand
     return None
 
 def _ensure_cloudflared() -> Path | None:
@@ -443,9 +453,13 @@ def _start_cloudflared_tunnel(port: int = 8787):
             with _CF_TUNNEL_LOCK:
                 _CF_TUNNEL_PROC = proc
 
+            url_announced = False
             for line in iter(proc.stdout.readline, ""):
+                if url_announced:
+                    continue
                 m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                 if m:
+                    url_announced = True
                     url = m.group(0)
                     with _CF_TUNNEL_LOCK:
                         _CF_TUNNEL_URL = url
@@ -462,12 +476,16 @@ def _start_cloudflared_tunnel(port: int = 8787):
                         qr.print_ascii(invert=True)
                     except Exception:
                         pass
-                    break
 
             proc.wait()
         except Exception as e:
             print(f"  ⚠️ Erro no processo do túnel Cloudflare: {e}")
         finally:
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
             with _CF_TUNNEL_LOCK:
                 _CF_TUNNEL_STATUS = "desligado"
                 _CF_TUNNEL_URL = None
@@ -502,33 +520,22 @@ def _qr_svg(data: str):
     except Exception:
         return None
 
-_LOCKED_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>StremMusic · Acesso Protegido</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#020617;color:#f1f5f9;font-family:'Outfit',system-ui,-apple-system,sans-serif;display:flex;
-  flex-direction:column;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;
-  text-align:center;padding:24px;-webkit-font-smoothing:antialiased}
-  .box{background:rgba(15,23,42,.65);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:36px 28px;max-width:420px;width:100%;box-shadow:0 24px 48px rgba(0,0,0,.5)}
-  .icon{width:56px;height:56px;border-radius:18px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);color:#38bdf8;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:24px}
-  h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:10px;color:#fff}
-  p{color:#94a3b8;font-size:14px;line-height:1.6;margin-bottom:20px}
-  code{background:rgba(255,255,255,.06);color:#e2e8f0;padding:2px 8px;border-radius:6px;font-size:12.5px}
-  form{display:flex;gap:8px;margin-top:8px}
-  input{flex:1;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;outline:none}
-  input:focus{border-color:#38bdf8}
-  button{background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:14px;font-weight:700;cursor:pointer}
-</style></head>
-<body><div class="box">
-  <div class="icon">🔒</div>
-  <h1>Acesso restrito a pareados</h1>
-  <p>Escaneie o QR Code no painel do computador (<code>http://localhost:8787/painel</code>) ou digite a chave de acesso abaixo:</p>
-  <form method="GET" action="/">
-    <input name="sk" placeholder="Chave de acesso…" autocomplete="off" required>
-    <button type="submit">Entrar</button>
-  </form>
-</div></body></html>"""
+from pwa_assets import _LOCKED_HTML, _PAINEL_CSS, _EMBEDDED_ASSETS
+
+_last_seen_mem: dict[int, float] = {}
+_last_seen_lock = threading.Lock()
+_LAST_SEEN_TTL = 60.0
+
+def _touch_last_seen(con, uid: int):
+    now = time.time()
+    with _last_seen_lock:
+        if now - _last_seen_mem.get(uid, 0.0) < _LAST_SEEN_TTL:
+            return
+        _last_seen_mem[uid] = now
+    try:
+        con.execute("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", (uid,))
+    except Exception:
+        pass
 
 def _get_user_by_token(token: str) -> dict | None:
     """Busca o perfil do usuário pelo seu token exclusivo de login/QR."""
@@ -538,10 +545,7 @@ def _get_user_by_token(token: str) -> dict | None:
     with db() as con:
         r = con.execute("SELECT id, name, token, is_admin FROM users WHERE token=?", (token,)).fetchone()
         if r:
-            try:
-                con.execute("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", (r["id"],))
-            except Exception:
-                pass
+            _touch_last_seen(con, int(r["id"]))
             return dict(r)
         if _safe_eq(token, _pair_key()):
             r1 = con.execute("SELECT id, name, token, is_admin FROM users WHERE id=1").fetchone()
@@ -550,9 +554,9 @@ def _get_user_by_token(token: str) -> dict | None:
     return None
 
 def _current_user(request: Request) -> dict:
-    """Retorna o perfil do usuário atual autenticado na requisição (ou Usuário 1 como fallback)."""
+    """Retorna o perfil do usuário atual autenticado na requisição (ou Admin apenas no localhost)."""
     u = getattr(request.state, "user", None)
-    if isinstance(u, dict) and u.get("id"):
+    if isinstance(u, dict) and u.get("id") is not None:
         return u
     token = request.query_params.get("sk") or request.cookies.get("sk")
     if token:
@@ -560,6 +564,13 @@ def _current_user(request: Request) -> dict:
         if found:
             request.state.user = found
             return found
+    is_local = getattr(request.state, "is_local", None)
+    if is_local is None:
+        is_local = _is_local_client(_resolve_client_ip(request))
+    if not is_local:
+        guest = {"id": 0, "name": "Convidado", "token": "", "is_admin": 0}
+        request.state.user = guest
+        return guest
     with db() as con:
         r = con.execute("SELECT id, name, token, is_admin FROM users ORDER BY id ASC LIMIT 1").fetchone()
         if r:
@@ -568,134 +579,142 @@ def _current_user(request: Request) -> dict:
             return found
     return {"id": 1, "name": "Principal (Admin)", "token": _pair_key(), "is_admin": 1}
 
-_PUBLIC_PWA_PATHS = {
-    "/manifest.webmanifest", "/sw.js", "/favicon.ico",
-    "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"
-}
+def _require_admin(request: Request) -> dict:
+    u = _current_user(request)
+    if not u.get("is_admin"):
+        raise HTTPException(403, "Apenas o administrador pode realizar esta ação")
+    return u
 
-@app.middleware("http")
-async def _pair_guard(request: Request, call_next):
-    path = request.url.path
-    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
-    if forwarded:
-        client = forwarded.split(",")[0].strip()
-    else:
-        client = request.client.host if request.client else ""
-    local = client in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost") \
-        or (client == "testclient" and path.startswith("/painel"))
-    if path == "/painel" or path.startswith("/painel/"):
-        if not local:  # painel é coisa do dono: nunca atravessa a rede
-            return Response("Painel disponível só no PC do dono (localhost).",
-                            status_code=403, media_type="text/plain; charset=utf-8")
-        return await call_next(request)
-    # Identifica o perfil do usuário por token de link (?sk=...) ou cookie
-    sk_param = request.query_params.get("sk")
-    sk_cookie = request.cookies.get("sk")
+def _require_playlist_owner(con, pid: int, u: dict, allow_admin: bool = False):
+    pl = con.execute("SELECT * FROM local_playlists WHERE id=?", (pid,)).fetchone()
+    if not pl:
+        raise HTTPException(404, "Playlist não encontrada")
+    if pl["user_id"] != u["id"] and not (allow_admin and u.get("is_admin")):
+        raise HTTPException(403, "Acesso negado: esta playlist pertence a outro usuário")
+    return pl
+
+def _resolve_guard_user(sk_param: str | None, sk_cookie: str | None, local: bool):
     matched_user = None
-
     if sk_param:
         matched_user = _get_user_by_token(sk_param)
     elif sk_cookie:
         matched_user = _get_user_by_token(sk_cookie)
-
-    if matched_user:
-        request.state.user = matched_user
-    elif local:
+    effective_user = matched_user
+    if effective_user is None and local:
         with db() as con:
             r1 = con.execute("SELECT id, name, token, is_admin FROM users ORDER BY id ASC LIMIT 1").fetchone()
             if r1:
-                request.state.user = dict(r1)
+                effective_user = dict(r1)
+    return matched_user, effective_user
+
+_PUBLIC_PWA_PATHS = {
+    "/manifest.webmanifest", "/sw.js", "/favicon.ico",
+    "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png",
+    "/static/app.css", "/static/app.js",
+}
+
+_LOCAL_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost")
+_TRUSTED_PROXY_HOSTS = (
+    set(_LOCAL_HOSTS)
+    | {"testclient"}
+    | {h.strip() for h in os.environ.get("TRUSTED_PROXIES", "").split(",") if h.strip()}
+)
+
+def _is_local_client(client: str) -> bool:
+    return client in _LOCAL_HOSTS or client == "testclient"
+
+def _apply_sec_headers(resp: Response) -> Response:
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    return resp
+
+_rl_lock = threading.Lock()
+_rl_hits: dict[tuple[str, str], list[float]] = {}
+_RATE_LIMITS: dict[str, tuple[int, float]] = {
+    "search": (40, 60.0),
+    "ytplaylist": (20, 60.0),
+    "stream": (90, 60.0),
+    "download": (30, 60.0),
+}
+
+def _check_rate_limit(request: Request, bucket: str):
+    max_req, window_s = _RATE_LIMITS.get(bucket, (60, 60.0))
+    ip = _resolve_client_ip(request) or "unknown"
+    now = time.time()
+    cutoff = now - window_s
+    key = (ip, bucket)
+    with _rl_lock:
+        if len(_rl_hits) > 2000:
+            for k in list(_rl_hits):
+                arr = [t for t in _rl_hits[k] if t > now - 60.0]
+                if arr:
+                    _rl_hits[k] = arr
+                else:
+                    _rl_hits.pop(k, None)
+        arr = [t for t in _rl_hits.get(key, ()) if t > cutoff]
+        if len(arr) >= max_req:
+            _rl_hits[key] = arr
+            raise HTTPException(429, "Muitas requisições em pouco tempo — aguarde alguns segundos.")
+        arr.append(now)
+        _rl_hits[key] = arr
+
+def _resolve_client_ip(request: Request) -> str:
+    """Resolve o IP real confiando em cabeçalhos de proxy só quando o peer é confiável."""
+    peer = (request.client.host if request.client else "") or ""
+    if peer not in _TRUSTED_PROXY_HOSTS:
+        return peer
+    cf_ip = (request.headers.get("cf-connecting-ip") or "").strip()
+    if cf_ip:
+        return cf_ip
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        parts = [p.strip() for p in xff.split(",") if p.strip()]
+        for hop in reversed(parts):
+            if hop not in _TRUSTED_PROXY_HOSTS:
+                return hop
+        if parts:
+            return parts[0]
+    return peer
+
+@app.middleware("http")
+async def _pair_guard(request: Request, call_next):
+    path = request.url.path
+    client = _resolve_client_ip(request)
+    local = _is_local_client(client)
+    request.state.is_local = local
+    if path == "/painel" or path.startswith("/painel/"):
+        if not local:  # painel é coisa do dono: nunca atravessa a rede
+            return _apply_sec_headers(Response("Painel disponível só no PC do dono (localhost).",
+                            status_code=403, media_type="text/plain; charset=utf-8"))
+        return _apply_sec_headers(await call_next(request))
+    # Identifica o perfil do usuário por token de link (?sk=...) ou cookie fora do event loop
+    sk_param = request.query_params.get("sk")
+    sk_cookie = request.cookies.get("sk")
+    matched_user, effective_user = await run_in_threadpool(_resolve_guard_user, sk_param, sk_cookie, local)
+
+    if effective_user:
+        request.state.user = effective_user
 
     # Verificação de bloqueio se a fechadura estiver ativada
     if not (path in _PUBLIC_PWA_PATHS or not SETTINGS.get("pairing_required") or local):
         if not getattr(request.state, "user", None):
-            return HTMLResponse(_LOCKED_HTML, status_code=403)
+            return _apply_sec_headers(HTMLResponse(_LOCKED_HTML, status_code=403))
 
     resp = await call_next(request)
 
     # Grava o cookie se o usuário veio por link com token (?sk=...)
     if sk_param and matched_user:
         try:
-            resp.set_cookie("sk", matched_user["token"], max_age=60 * 60 * 24 * 365, samesite="lax", httponly=True)
+            peer = (request.client.host if request.client else "") or ""
+            xfp = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower() if peer in _TRUSTED_PROXY_HOSTS else ""
+            is_https = (request.url.scheme == "https") or (xfp == "https")
+            resp.set_cookie("sk", matched_user["token"], max_age=60 * 60 * 24 * 365,
+                            samesite="lax", httponly=True, secure=is_https)
         except Exception:
             pass
 
-    return resp
-
-_PAINEL_CSS = """
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#020617;background-image:radial-gradient(ellipse at 50% 0%,rgba(56,189,248,.11),transparent 65%);color:#f1f5f9;font-family:'Outfit',system-ui,-apple-system,sans-serif;padding:32px 20px 60px;min-height:100vh;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:940px;margin:0 auto}
-  .top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,.06)}
-  .brand{display:flex;align-items:center;gap:14px}
-  .logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#38bdf8,#818cf8);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(56,189,248,.3);font-size:20px;color:#fff;font-weight:800}
-  h1{font-size:22px;font-weight:800;letter-spacing:-.5px;color:#fff}
-  h1 span{background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .sub{color:#94a3b8;font-size:13px;margin-top:2px}
-  .btn-open{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#f1f5f9;text-decoration:none;padding:10px 18px;border-radius:99px;font-size:13.5px;font-weight:600;transition:.2s}
-  .btn-open:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2)}
-  .controls-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:24px}
-  .ctrl-card{background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:18px 20px;display:flex;flex-direction:column;justify-content:space-between;gap:14px}
-  .ctrl-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
-  .ctrl-title{font-size:14px;font-weight:700;color:#fff}
-  .ctrl-desc{font-size:12.5px;color:#94a3b8;line-height:1.45;margin-top:4px}
-  .ctrl-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .badge{padding:5px 12px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.02em;white-space:nowrap}
-  .badge.on{background:rgba(251,113,133,.12);color:#fb7185;border:1px solid rgba(251,113,133,.3)}
-  .badge.off{background:rgba(74,222,128,.1);color:#4ade80;border:1px solid rgba(74,222,128,.25)}
-  .badge.cf-on{background:rgba(56,189,248,.14);color:#38bdf8;border:1px solid rgba(56,189,248,.35)}
-  .badge.cf-off{background:rgba(255,255,255,.04);color:#94a3b8;border:1px solid rgba(255,255,255,.08)}
-  button{background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;border:0;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;font-family:inherit}
-  button:hover{filter:brightness(1.08);transform:translateY(-1px)}
-  button.ghost{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);color:#e2e8f0}
-  button.ghost:hover{background:rgba(255,255,255,.11);border-color:rgba(255,255,255,.18)}
-  .key-pill{font-family:ui-monospace,monospace;font-size:12px;color:#94a3b8;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.07);padding:7px 12px;border-radius:10px;cursor:pointer;user-select:all}
-  .key-pill b{color:#f8fafc}
-  .sect-label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin:8px 0 12px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}
-  .card{background:rgba(15,23,42,.45);border:1px solid rgba(255,255,255,.07);border-radius:20px;padding:22px;display:flex;flex-direction:column;transition:border-color .2s}
-  .card:hover{border-color:rgba(255,255,255,.14)}
-  .card.cf{background:linear-gradient(180deg,rgba(14,58,84,.35),rgba(15,23,42,.6));border-color:rgba(56,189,248,.35)}
-  .tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#64748b}
-  .card.cf .tag{color:#38bdf8}
-  .ip{font-size:19px;font-weight:800;margin:4px 0 10px;color:#fff;letter-spacing:-.3px}
-  .url-row{display:flex;align-items:center;gap:6px}
-  .url{flex:1;font-family:ui-monospace,monospace;font-size:11.5px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:9px 11px;word-break:break-all;cursor:pointer;color:#cbd5e1;transition:.15s}
-  .url:hover{border-color:rgba(56,189,248,.4);color:#fff}
-  .url[data-c="1"]::after{content:" · copiado ✓";color:#4ade80;font-weight:700}
-  .qr{background:#fff;border-radius:16px;padding:12px;margin:16px auto 12px;width:min(196px,100%);box-shadow:0 12px 30px rgba(0,0,0,.35)}
-  .qr svg{width:100%;height:auto;display:block}
-  .hint{font-size:12.5px;color:#94a3b8;line-height:1.5;text-align:center}
-  .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(56,189,248,.25);border-top-color:#38bdf8;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-3px;margin-right:8px}
-  @keyframes sp{to{transform:rotate(360deg)}}
-  .foot{margin-top:28px;padding-top:18px;border-top:1px solid rgba(255,255,255,.05);font-size:12.5px;color:#64748b;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
-  a{color:#38bdf8;text-decoration:none}
-  .users-box{background:rgba(15,23,42,.55);border:1px solid rgba(255,255,255,.07);border-radius:22px;padding:22px 24px;margin-bottom:28px}
-  .users-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
-  .user-add-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .user-add-form input{background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:#fff;padding:10px 14px;font-size:13px;width:240px;outline:none;font-family:inherit}
-  .user-add-form input:focus{border-color:#38bdf8}
-  .users-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
-  .u-card{background:rgba(2,6,23,.6);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px;display:flex;flex-direction:column;justify-content:space-between;gap:12px}
-  .u-card.admin{border-color:rgba(56,189,248,.35);background:linear-gradient(180deg,rgba(14,58,84,.25),rgba(2,6,23,.6))}
-  .u-top{display:flex;align-items:center;gap:12px}
-  .u-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#818cf8);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(56,189,248,.25)}
-  .u-meta{flex:1;min-width:0}
-  .u-name{font-size:14.5px;font-weight:700;color:#fff;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .u-badge{font-size:10px;padding:2px 8px;border-radius:99px;font-weight:700;text-transform:uppercase}
-  .u-badge.adm{background:rgba(56,189,248,.2);color:#38bdf8;border:1px solid rgba(56,189,248,.4)}
-  .u-badge.usr{background:rgba(255,255,255,.06);color:#94a3b8}
-  .u-seen{font-size:11.5px;color:#64748b;margin-top:2px}
-  .u-links{display:flex;flex-direction:column;gap:6px}
-  .u-link{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06);border-radius:9px;padding:7px 10px;cursor:pointer;transition:.15s}
-  .u-link:hover{border-color:#38bdf8;background:rgba(0,0,0,.55)}
-  .u-link-type{font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:2px}
-  .u-link-url{font-family:ui-monospace,monospace;font-size:11px;color:#cbd5e1;word-break:break-all}
-  .u-actions{display:flex;align-items:center;gap:6px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05);flex-wrap:wrap}
-  .btn-sm{padding:6px 12px;font-size:11.5px;border-radius:9px}
-  .btn-del{background:rgba(239,68,68,.1);color:#fca5a5;border:1px solid rgba(239,68,68,.25)}
-  .btn-del:hover{background:rgba(239,68,68,.2);border-color:#f87171}
-"""
+    return _apply_sec_headers(resp)
 
 @app.get("/painel", response_class=HTMLResponse)
 def painel(request: Request):
@@ -713,13 +732,14 @@ def painel(request: Request):
 
     user_cards = []
     for u in users:
-        uid = u["id"]
-        uname = u["name"]
-        utok = u["token"]
+        uid = int(u["id"])
+        raw_name = str(u["name"] or "")
+        uname = html.escape(raw_name, quote=True)
+        utok = urllib.parse.quote(str(u["token"] or ""), safe="-_.~")
         is_adm = bool(u.get("is_admin"))
-        initial = (uname[:1] or "U").upper()
+        initial = html.escape((raw_name[:1] or "U").upper(), quote=True)
         seen = u.get("last_seen")
-        seen_txt = f"Visto em {seen[:16]}" if seen else "Nunca conectou"
+        seen_txt = html.escape(f"Visto em {seen[:16]}" if seen else "Nunca conectou", quote=True)
         badge = "<span class='u-badge adm'>Admin</span>" if is_adm else "<span class='u-badge usr'>Convidado</span>"
 
         cf_link = f"{_CF_TUNNEL_URL}/?sk={utok}" if _CF_TUNNEL_URL else None
@@ -729,25 +749,31 @@ def painel(request: Request):
 
         links_html = ""
         if cf_link:
+            cf_attr = html.escape(cf_link, quote=True)
             links_html += (
-                f'<div class="u-link" title="Clique para copiar link da rua" onclick="navigator.clipboard.writeText(\'{cf_link}\');this.querySelector(\x27.u-link-url\x27).textContent=\x27Link copiado ✓\x27;">'
+                f'<div class="u-link" title="Clique para copiar link da rua" data-url="{cf_attr}" '
+                f'onclick="navigator.clipboard.writeText(this.dataset.url);this.querySelector(\'.u-link-url\').textContent=\'Link copiado ✓\';">'
                 f'<span class="u-link-type">☁️ Link na Rua (4G/5G)</span>'
-                f'<div class="u-link-url">{cf_link}</div></div>'
+                f'<div class="u-link-url">{cf_attr}</div></div>'
             )
+        local_attr = html.escape(local_link, quote=True)
         links_html += (
-            f'<div class="u-link" title="Clique para copiar link local" onclick="navigator.clipboard.writeText(\'{local_link}\');this.querySelector(\x27.u-link-url\x27).textContent=\x27Link copiado ✓\x27;">'
+            f'<div class="u-link" title="Clique para copiar link local" data-url="{local_attr}" '
+            f'onclick="navigator.clipboard.writeText(this.dataset.url);this.querySelector(\'.u-link-url\').textContent=\'Link copiado ✓\';">'
             f'<span class="u-link-type">📶 Link no Wi-Fi</span>'
-            f'<div class="u-link-url">{local_link}</div></div>'
+            f'<div class="u-link-url">{local_attr}</div></div>'
         )
 
         del_btn = ""
         if not is_adm:
+            confirm_attr = html.escape(f"Excluir o usuário {raw_name} e todos os seus favoritos/histórico?", quote=True)
             del_btn = (
                 f'<form method="POST" action="/painel/users/{uid}/delete" style="display:inline" '
-                f'onsubmit="return confirm(\x27Excluir o usuário {uname} e todos os seus favoritos/histórico?\x27);">'
+                f'data-confirm="{confirm_attr}" onsubmit="return confirm(this.dataset.confirm);">'
                 f'<button type="submit" class="ghost btn-sm btn-del">🗑️ Excluir</button></form>'
             )
 
+        qr_attr = html.escape(qr_target, quote=True)
         admin_cls = 'admin' if is_adm else ''
         u_card = (
             f"<div class='u-card {admin_cls}'>"
@@ -759,7 +785,7 @@ def painel(request: Request):
             f"<div class='qr'>{qr_svg}</div>"
             f"<div class='hint'>📷 Aponte a câmera do celular de <b>{uname}</b></div>"
             f"<div class='u-actions'>"
-            f"<button class='ghost btn-sm' onclick=\"navigator.clipboard.writeText('{qr_target}');this.textContent='Copiado ✓';\">📋 Copiar Link</button>"
+            f"<button class='ghost btn-sm' data-url=\"{qr_attr}\" onclick=\"navigator.clipboard.writeText(this.dataset.url);this.textContent='Copiado ✓';\">📋 Copiar Link</button>"
             f"<form method='POST' action='/painel/users/{uid}/rekey' style='display:inline'>"
             f"<button type='submit' class='ghost btn-sm' title='Regera a chave de acesso deste usuário e desloga aparelhos antigos'>🔄 Renovar QR</button></form>"
             f"{del_btn}"
@@ -839,11 +865,11 @@ def _check_csrf(request: Request):
     host = request.headers.get("host") or ""
     if origin:
         parsed = urllib.parse.urlparse(origin)
-        if parsed.netloc and parsed.netloc != host:
+        if not parsed.netloc or parsed.netloc != host:
             raise HTTPException(403, "Origem inválida")
     elif referer:
         parsed = urllib.parse.urlparse(referer)
-        if parsed.netloc and parsed.netloc != host:
+        if not parsed.netloc or parsed.netloc != host:
             raise HTTPException(403, "Referer inválido")
 
 @app.post("/painel/toggle")
@@ -856,9 +882,12 @@ def painel_toggle(request: Request):
 @app.post("/painel/rekey")
 def painel_rekey(request: Request):
     _check_csrf(request)
-    SETTINGS["pair_key"] = secrets.token_urlsafe(9)
+    new_key = secrets.token_urlsafe(12)
+    SETTINGS["pair_key"] = new_key
     _save_settings()
-    return {"pair_key": SETTINGS["pair_key"]}
+    with db() as con:
+        con.execute("UPDATE users SET token=? WHERE id=1", (new_key,))
+    return {"pair_key": new_key}
 
 @app.post("/painel/users")
 async def painel_create_user(request: Request):
@@ -892,6 +921,7 @@ def painel_delete_user(uid: int, request: Request):
         con.execute("DELETE FROM favorites WHERE user_id=?", (uid,))
         con.execute("DELETE FROM history WHERE user_id=?", (uid,))
         con.execute("DELETE FROM next_map WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM stations WHERE user_id=?", (uid,))
         con.execute("DELETE FROM playlist_items WHERE playlist_id IN (SELECT id FROM local_playlists WHERE user_id=?)", (uid,))
         con.execute("DELETE FROM local_playlists WHERE user_id=?", (uid,))
         con.execute("DELETE FROM users WHERE id=?", (uid,))
@@ -905,14 +935,15 @@ def painel_tunnel_toggle(request: Request):
         _stop_cloudflared_tunnel()
         SETTINGS["cloudflare_tunnel"] = False
     else:
-        port = int(os.environ.get("PORT", "8787"))
+        port = request.url.port or int(os.environ.get("PORT", "8787"))
         _start_cloudflared_tunnel(port)
         SETTINGS["cloudflare_tunnel"] = True
     _save_settings()
     return {"ok": True, "active": not cf_on}
 
 @app.get("/api/tunnel/status")
-def tunnel_status():
+def tunnel_status(request: Request):
+    _require_admin(request)
     cf_on = bool(_CF_TUNNEL_PROC and _CF_TUNNEL_PROC.poll() is None)
     return {"status": _CF_TUNNEL_STATUS, "active": cf_on, "url": _CF_TUNNEL_URL}
 
@@ -950,7 +981,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS history (user_id INTEGER NOT NULL DEFAULT 1, video_id TEXT NOT NULL, title TEXT, artist TEXT, thumbnail TEXT, played_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, video_id));
         CREATE TABLE IF NOT EXISTS local_playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL, UNIQUE(user_id, name));
         CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER, video_id TEXT, title TEXT, artist TEXT, thumbnail TEXT, position INTEGER, PRIMARY KEY (playlist_id, video_id));
-        CREATE TABLE IF NOT EXISTS stations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, seed_id TEXT, seed_title TEXT, seed_artist TEXT, seed_thumb TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS stations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL DEFAULT 1, name TEXT, seed_id TEXT, seed_title TEXT, seed_artist TEXT, seed_thumb TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS plays (video_id TEXT PRIMARY KEY, n INTEGER DEFAULT 0, last_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS next_map (
             user_id INTEGER NOT NULL DEFAULT 1,
@@ -966,6 +997,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS uploads (
             id TEXT PRIMARY KEY, file TEXT UNIQUE, title TEXT, artist TEXT,
             album TEXT, dur REAL, art TEXT, added TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS cache_entries (
+            video_id TEXT PRIMARY KEY,
+            content_type TEXT DEFAULT 'audio/mp4',
+            size INTEGER NOT NULL DEFAULT 0,
+            created REAL NOT NULL DEFAULT 0,
+            at REAL NOT NULL DEFAULT 0,
+            title TEXT DEFAULT '',
+            artist TEXT DEFAULT '',
+            client TEXT DEFAULT ''
+        );
         """)
         # Garante usuário 1 (Principal / Admin)
         u1 = con.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()
@@ -1041,12 +1082,26 @@ def init_db():
                            SELECT 1, prev_id, next_id, n FROM next_map""")
             con.execute("DROP TABLE next_map")
             con.execute("ALTER TABLE next_map_v2 RENAME TO next_map")
+        # Migração suave de estações para multi-usuário
+        st_cols = [r[1] for r in con.execute("PRAGMA table_info(stations)").fetchall()]
+        if "user_id" not in st_cols:
+            con.execute("ALTER TABLE stations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1")
         # migração suave: ano e gênero das faixas importadas (colunas novas)
         for col, typ in (("year", "INTEGER DEFAULT 0"), ("genre", "TEXT DEFAULT ''")):
             try:
                 con.execute(f"ALTER TABLE uploads ADD COLUMN {col} {typ}")
             except Exception:
                 pass   # coluna já existe
+        con.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_cache_entries_at ON cache_entries(at DESC);
+        CREATE INDEX IF NOT EXISTS idx_favorites_user_added ON favorites(user_id, added_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_history_user_played ON history(user_id, played_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_local_playlists_user ON local_playlists(user_id);
+        CREATE INDEX IF NOT EXISTS idx_playlist_items_pl_pos ON playlist_items(playlist_id, position);
+        CREATE INDEX IF NOT EXISTS idx_stations_user ON stations(user_id);
+        CREATE INDEX IF NOT EXISTS idx_next_map_user_prev_n ON next_map(user_id, prev_id, n DESC);
+        CREATE INDEX IF NOT EXISTS idx_plays_n_last ON plays(n DESC, last_at DESC);
+        """)
 init_db()
 
 # ---------- YouTube Music (API pública anônima: busca e letras não precisam de login) ----------
@@ -1084,7 +1139,7 @@ URL_TTL = 4 * 3600
 #   tv          → sem cookies falha sempre ("The page needs to be reloaded"); só
 #                 fica de pé com cookies.txt (USE_COOKIES=1 / switch no painel)
 # (o client "ios" foi testado e removido: falhou sempre com "Requested format is not available")
-PLAYER_CLIENTS = [["android_vr"], ["mweb"], None]
+PLAYER_CLIENTS = [None, ["mweb"], ["android_vr"]]
 # android_vr em 1º, mweb em 2º (2ª análise independente — mistral/out-2026 — bateu
 # com a nossa): com o race_wave padrão (2) os dois CAEM NA MESMA 1ª ONDA e correm
 # em paralelo — android_vr de pé ganha em 1–3s (sem PO Token); vídeo "Made for
@@ -1229,11 +1284,12 @@ def _mark_client_ms(lbl: str, seconds: float):
 
 
 def _set_ejs(needed: bool, motivo: str = ""):
-    prev = _EJS.get("needed")
-    _EJS["needed"] = bool(needed)
-    _EJS["at"] = time.time()
-    _EJS["streak_fail"] = 0
-    _EJS["streak_ok"] = 0
+    with _health_lock:
+        prev = _EJS.get("needed")
+        _EJS["needed"] = bool(needed)
+        _EJS["at"] = time.time()
+        _EJS["streak_fail"] = 0
+        _EJS["streak_ok"] = 0
     if prev != needed:
         print(f"🧪 solucionador JS (EJS): {'LIGADO — ' + motivo if needed else 'dispensado — extração enxuta resolveu'}")
         try:
@@ -1246,11 +1302,13 @@ def _set_ejs(needed: bool, motivo: str = ""):
 def _ordered_clients(clients_list: list) -> list:
     """Ordem por latência MEDIDA (quem não foi medido vai depois, na ordem
     original). Com race_wave=1 isso é a diferença entre 4s e 9s na 1ª faixa."""
-    if not _CLIENT_MS:
-        return clients_list
+    with _health_lock:
+        if not _CLIENT_MS:
+            return clients_list
+        ms_snap = dict(_CLIENT_MS)
     def chave(item):
         i, c = item
-        ms = _CLIENT_MS.get(_label(c))
+        ms = ms_snap.get(_label(c))
         return (0 if ms is not None else 1, ms or 10 ** 9, i)
     return [c for _, c in sorted(enumerate(clients_list), key=chave)]
 
@@ -1258,8 +1316,10 @@ def _ordered_clients(clients_list: list) -> list:
 def _extract_one_adaptive(video_id: str, clients) -> dict:
     """Caminho enxuto primeiro (~4s mais rápido nas medições); o solucionador JS
     remoto só entra se ele falhar — e só fica ligado depois de falhar seguido."""
-    need = _EJS.get("needed")
-    if need and (time.time() - float(_EJS.get("at") or 0) < EJS_TTL):
+    with _health_lock:
+        need = _EJS.get("needed")
+        ejs_at = float(_EJS.get("at") or 0)
+    if need and (time.time() - ejs_at < EJS_TTL):
         return _extract_one(video_id, clients, ejs=True)
     t0 = time.time()
     try:
@@ -1268,20 +1328,45 @@ def _extract_one_adaptive(video_id: str, clients) -> dict:
         with _health_lock:
             _EJS["streak_ok"] = int(_EJS.get("streak_ok") or 0) + 1
             _EJS["streak_fail"] = 0
-        if need and _EJS["streak_ok"] >= EJS_ACERTOS_PARA_DESLIGAR:
+            turn_off = bool(need and _EJS["streak_ok"] >= EJS_ACERTOS_PARA_DESLIGAR)
+        if turn_off:
             _set_ejs(False, "")
         return data
     except Exception as first:
+        msg_low = str(first).lower()
+        if any(tok in msg_low for tok in ("requested format is not available", "sign in", "unavailable", "private video", "cancelado")):
+            raise first
         with _health_lock:
             _EJS["streak_fail"] = int(_EJS.get("streak_fail") or 0) + 1
             _EJS["streak_ok"] = 0
+            turn_on_count = _EJS["streak_fail"]
         try:
             data = _extract_one(video_id, clients, ejs=True)
-            if _EJS["streak_fail"] >= EJS_FALHAS_PARA_LIGAR:
+            if turn_on_count >= EJS_FALHAS_PARA_LIGAR:
                 _set_ejs(True, f"{_label(clients)} só entregou a URL com o EJS")
             return data
         except Exception:
             raise first
+
+def _probe_url_ok(data: dict) -> tuple[bool, int | None]:
+    """Confirma que o CDN (googlevideo) aceita a URL extraída (sem 403/410)."""
+    url = (data or {}).get("url") or ""
+    if not url:
+        return False, None
+    hdrs = {"User-Agent": UA, **(data.get("headers") or {})}
+    proxies = {"https": YT_PROXY} if YT_PROXY else None
+    for rh in ({"Range": "bytes=0-1023"}, {}):
+        try:
+            r = session.get(url, headers={**hdrs, **rh}, stream=True, timeout=(3, 5), proxies=proxies)
+            st = r.status_code
+            r.close()
+            if st < 400:
+                return True, st
+            if st != 403:
+                return False, st
+        except Exception:
+            return False, None
+    return False, 403
 
 
 def _probe_engine(full: bool = True) -> dict:
@@ -1291,7 +1376,8 @@ def _probe_engine(full: bool = True) -> dict:
     if not _probe_lock.acquire(blocking=False):
         return {"ok": False, "motivo": "sondagem já em andamento"}
     try:
-        canario = _EJS["probe_video"]
+        with _health_lock:
+            canario = _EJS["probe_video"]
         resultado = {}
         try:
             if not full:
@@ -1305,28 +1391,42 @@ def _probe_engine(full: bool = True) -> dict:
                 lbl = _label(clients)
                 t0 = time.time()
                 try:
-                    _extract_one(canario, clients, ejs=False)
+                    d = _extract_one(canario, clients, ejs=False)
                     dt = time.time() - t0
-                    _mark_client_ms(lbl, dt)
-                    resultado[lbl] = {"ms": int(dt * 1000), "ok": True}
+                    ok_cdn, st_cdn = _probe_url_ok(d)
+                    if ok_cdn:
+                        _mark_client_ms(lbl, dt)
+                        resultado[lbl] = {"ms": int(dt * 1000), "ok": True}
+                    else:
+                        with _health_lock:
+                            _CLIENT_MS.pop(lbl, None)
+                        resultado[lbl] = {"ms": None, "ok": False, "erro": f"CDN HTTP {st_cdn}"}
+                        print(f"🧪 {lbl}: extraiu URL mas CDN devolveu HTTP {st_cdn}")
                 except Exception as e:
+                    with _health_lock:
+                        _CLIENT_MS.pop(lbl, None)
                     resultado[lbl] = {"ms": None, "ok": False, "erro": str(e)[:90]}
                     print(f"🧪 {lbl}: enxuto falhou na sondagem ({str(e)[:70]})")
                 time.sleep(0.8)                  # não vira rajada no YouTube
         finally:
-            _EJS["last_ms"] = {k: v.get("ms") for k, v in resultado.items()}
-            _EJS["at"] = time.time()
+            with _health_lock:
+                _EJS["last_ms"] = {k: v.get("ms") for k, v in resultado.items()}
+                _EJS["at"] = time.time()
+                ms_snap = dict(_CLIENT_MS)
+                ejs_val = _EJS.get("needed")
             if resultado and not any(v["ok"] for v in resultado.values()):
                 _set_ejs(True, "nenhum client entregou URL no caminho enxuto")
             elif any(v["ok"] for v in resultado.values()):
                 _set_ejs(False, "")
             try:
-                SETTINGS["client_ms"] = dict(_CLIENT_MS)
+                SETTINGS["client_ms"] = ms_snap
                 _save_settings()
             except Exception:
                 pass
+            with _health_lock:
+                ejs_val = _EJS.get("needed")
         print(f"🧪 sondagem concluída: {resultado}")
-        return {"ok": True, "resultado": resultado, "ejs": _EJS.get("needed")}
+        return {"ok": True, "resultado": resultado, "ejs": ejs_val}
     finally:
         _probe_lock.release()
 
@@ -1400,33 +1500,60 @@ def _load_settings():
     except Exception:
         pass
 
+_settings_lock = threading.Lock()
+
 def _save_settings():
-    try:
-        SETTINGS_FILE.write_text(json.dumps(SETTINGS, indent=2, ensure_ascii=False),
-                                 encoding="utf-8")
-    except Exception as e:
-        print(f"⚠️ não consegui salvar settings.json: {e}")
+    with _settings_lock:
+        try:
+            payload = json.dumps(dict(SETTINGS), indent=2, ensure_ascii=False)
+            tmp = SETTINGS_FILE.with_name(f"settings.{uuid.uuid4().hex[:6]}.tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, SETTINGS_FILE)
+        except Exception as e:
+            print(f"⚠️ não consegui salvar settings.json: {e}")
 
 _load_settings()
 
 # Vídeos com pedido de stream ATIVO. Suporta vários aparelhos na rede ao mesmo
 # tempo: a troca de música num aparelho NÃO cancela a extração do outro — uma
 # extração "urgent" só é cancelada quando NINGUÉM está mais pedindo aquele vídeo.
-_wanted = set()
+_wanted: dict[str, int] = {}
 _wanted_lock = threading.Lock()
 
 def _want(video_id: str):
     with _wanted_lock:
-        _wanted.add(video_id)
+        _wanted[video_id] = _wanted.get(video_id, 0) + 1
 
 def _unwant(video_id: str):
     with _wanted_lock:
-        _wanted.discard(video_id)
+        n = _wanted.get(video_id, 0) - 1
+        if n <= 0:
+            _wanted.pop(video_id, None)
+        else:
+            _wanted[video_id] = n
 
-_last_ok = {"label": None}    # último client que deu certo → tenta primeiro na próxima
+def _wait_if_user_busy(max_wait: float = 15.0):
+    """Pausa extrações de fundo (pré-cache/busca) enquanto há play ativo."""
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        with _wanted_lock:
+            busy = bool(_wanted)
+        if not busy:
+            return
+        time.sleep(0.35)
+
+_last_ok = {"label": None}    # último client que entregou áudio SEM 403 → tenta primeiro na próxima
+
+def _record_cdn_ok(lbl: str):
+    if not lbl:
+        return
+    with _health_lock:
+        _last_ok["label"] = lbl
+    _client_mark_ok(lbl)
 
 def _prefer_last_ok(clients):
-    last = _last_ok["label"]
+    with _health_lock:
+        last = _last_ok["label"]
     if not last:
         return clients
     first = [c for c in clients if _label(c) == last]
@@ -1524,7 +1651,7 @@ def _audio_alts(fmts, chosen: str) -> list:
 
 def _extract_one(video_id: str, clients, ejs: bool | None = None) -> dict:
     opts = _base_ydl_opts(ejs)
-    opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+    opts["format"] = "bestaudio[ext=m4a]/bestaudio"
     if clients:
         opts["extractor_args"]["youtube"]["player_client"] = clients
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1533,11 +1660,10 @@ def _extract_one(video_id: str, clients, ejs: bool | None = None) -> dict:
         raise RuntimeError(f"sem dados ({_label(clients)})")
     hdrs = info.get("http_headers") or {}
     url = info.get("url") or ""
-    if _is_direct_media(url, info.get("protocol") or ""):
+    if info.get("vcodec") in (None, "none") and _is_direct_media(url, info.get("protocol") or ""):
         return {"url": url, "headers": hdrs, "client": _label(clients),
                 "alts": _audio_alts(info.get("formats"), url)}
-    # O formato escolhido veio como manifest (HLS/DASH): procura um formato de
-    # áudio direto na lista; sem nenhum, falha para a onda tentar o próximo client.
+    # O formato escolhido veio como manifest (HLS/DASH) ou vídeo+áudio: procura áudio direto.
     cands = []
     for f in info.get("formats") or []:
         fu = f.get("url") or ""
@@ -1550,7 +1676,7 @@ def _extract_one(video_id: str, clients, ejs: bool | None = None) -> dict:
             continue
         cands.append(f)
     if not cands:
-        raise RuntimeError(f"só manifest HLS/DASH disponível ({_label(clients)})")
+        raise RuntimeError(f"sem áudio direto disponível ({_label(clients)})")
     cands.sort(key=lambda f: (f.get("ext") == "m4a", f.get("abr") or f.get("tbr") or 0), reverse=True)
     f = cands[0]
     return {"url": f["url"], "headers": f.get("http_headers") or hdrs, "client": _label(clients),
@@ -1561,14 +1687,13 @@ def _extract(video_id: str, avoid=(), urgent: bool = False) -> dict:
     # evita clients marcados como ruins para este vídeo (403 recente no stream)
     _full = _clients_full()   # web_safari/tv só entram com cookies (gemini 3.8, log real)
     clients_list = [c for c in _full if _label(c) not in avoid] or list(_full)
-    clients_list = _prefer_last_ok(clients_list)   # o client que funcionou por último vai na frente
     clients_list, de_folga = _client_healthy(clients_list)
     if de_folga:
         print(f"ℹ️ {video_id}: clients de folga nesta rodada: {', '.join(de_folga)}")
     if not clients_list:            # teoricamente impossível (sondagem libera 1x); por segurança
         clients_list = list(_full)
-    # quem a sondagem mediu mais rápido vai na frente (empate = ordem original)
-    clients_list = _ordered_clients(clients_list)
+    # quem a sondagem mediu mais rápido vai na frente, e o último validado sem 403 no CDN vence empates
+    clients_list = _prefer_last_ok(_ordered_clients(clients_list))
     wave_n = max(1, min(4, int(SETTINGS.get("race_wave") or RACE_WAVE)))
     wave_to = max(5, min(90, int(SETTINGS.get("extract_timeout") or EXTRACT_TIMEOUT)))
     # 1ª onda = UM client só (o mais rápido medido). Medido nesta máquina: 3
@@ -1592,16 +1717,14 @@ def _extract(video_id: str, avoid=(), urgent: bool = False) -> dict:
         if remaining <= 0:
             errors.append("tempo esgotado")
             break
-        # com 1 client na frente, o teto curto devolve o controle rápido se ele
-        # morrer; com EJS ligado a extração é sabidamente lenta, então usa o teto
-        teto = wave_to if (wi or _EJS.get("needed")) else min(wave_to, 12)
+        # teto de 18s na 1ª onda evita abandonar uma extração quase pronta (12–15s)
+        # e disparar a 2ª onda em paralelo competindo por Deno/YouTube
+        teto = wave_to if (wi or _EJS.get("needed")) else min(wave_to, 18)
         futs = {_extract_pool.submit(_extract_one_adaptive, video_id, c): c for c in wave}
         try:
             for f in cf.as_completed(futs, timeout=min(teto, remaining)):
                 try:
                     data = f.result()
-                    _last_ok["label"] = data["client"]
-                    _client_mark_ok(data["client"])
                     print(f"✅ URL de {video_id} via {data['client']} em {time.time() - start:.2f}s")
                     return data
                 except Exception as e:
@@ -1619,7 +1742,8 @@ def get_stream_data(video_id: str, force: bool = False, avoid=(),
     # Com 'avoid' (renovação pós-403) o cache é ignorado: a URL guardada é
     # justamente a do client que acabou de falhar.
     if not force and not avoid:
-        hit = _stream_cache.get(video_id)
+        with _cache_lock:
+            hit = _stream_cache.get(video_id)
         if hit and now - hit[0] < URL_TTL:
             return hit[1]
         # O cooldown de falha existe pra proteger as tentativas DE FUNDO
@@ -1668,6 +1792,7 @@ def get_stream_data(video_id: str, force: bool = False, avoid=(),
 
 def _safe_prewarm(vid: str):
     try:
+        _wait_if_user_busy()
         data = get_stream_data(vid)
         # Aquece DNS/TCP/TLS do googlevideo AQUI (pré-carga), não no clique: quando
         # o play chegar, o /api/stream reusa a conexão e o 1º byte vem pronto.
@@ -1680,24 +1805,22 @@ def _enqueue_warm(ids: list):
     if not (SETTINGS.get("cache_enabled") and SETTINGS.get("prefetch_next", True)):
         return
     _ensure_warm_worker()
-    with _warm_lock:
+    added = False
+    with _warm_cond:
         for v in ids[:50]:
             v = str(v or "")
             if VID_RE.match(v) and v not in _warm_set:
                 _warm_set.add(v)
                 _warm_q.append(v)
+                added = True
+        if added:
+            _warm_cond.notify_all()
 
 def prewarm(video_ids: list[str]):
-    # Apenas a 1ª sugestão corre em paralelo (é a que o usuário mais clica — e
-    # thread própria: o pré-carregamento espera a extração, não pode ocupar
-    # worker do pool). As demais vão pra fila sequencial de pré-cache: 3+
-    # extrações simultâneas no mesmo segundo esbarravam na barreira anti-bot
-    # do YouTube e derrubavam TODAS as resoluções (os 502 em cascata de out/2026).
+    # Enfileira sequencialmente em vez de competir em paralelo com o play atual.
     if not video_ids:
         return
-    threading.Thread(target=_safe_prewarm, args=(video_ids[0],), daemon=True).start()
-    if len(video_ids) > 1:
-        _enqueue_warm(video_ids[1:])
+    _enqueue_warm(video_ids)
 
 # Sessão HTTP reaproveitada para os trechos de áudio
 session = _mount_ipv4(requests.Session())
@@ -1707,6 +1830,13 @@ CACHE_DIR = DATA / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")     # formato de videoId do YouTube
 UP_RE = re.compile(r"^up_[a-f0-9]{10}$")         # formato de id de arquivo local próprio (upload)
+_TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+
+def _valid_track_id(video_id: str) -> str:
+    vid = str(video_id or "")
+    if not _TRACK_ID_RE.match(vid):
+        raise HTTPException(400, "video_id inválido")
+    return vid
 UP_DIR = DL_DIR / "upload"
 UP_DIR.mkdir(exist_ok=True)
 
@@ -1757,33 +1887,139 @@ def thumb(video_id: str):
 _disk_lock = threading.Lock()
 _prefetch_lock = threading.Lock()
 _prefetch_active: set = set()
+_DEFAULT_CACHE_DIR = CACHE_DIR
+_cache_touch_mem: dict[str, float] = {}
+_cache_touch_lock = threading.Lock()
+_CACHE_TOUCH_TTL = 60.0
+_last_part_prune = 0.0
+
+def _use_cache_db() -> bool:
+    return CACHE_DIR == _DEFAULT_CACHE_DIR
 
 def _cache_paths(vid: str):
     return CACHE_DIR / f"{vid}.audio", CACHE_DIR / f"{vid}.meta.json"
+
+def _cache_db_upsert(vid: str, m: dict):
+    if not _use_cache_db():
+        return
+    try:
+        now = time.time()
+        with db() as con:
+            con.execute(
+                """INSERT INTO cache_entries (video_id, content_type, size, created, at, title, artist, client)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(video_id) DO UPDATE SET
+                       content_type=excluded.content_type,
+                       size=excluded.size,
+                       created=excluded.created,
+                       at=excluded.at,
+                       title=COALESCE(NULLIF(excluded.title, ''), cache_entries.title),
+                       artist=COALESCE(NULLIF(excluded.artist, ''), cache_entries.artist),
+                       client=COALESCE(NULLIF(excluded.client, ''), cache_entries.client)""",
+                (vid, str(m.get("content_type") or "audio/mp4"), int(m.get("size") or 0),
+                 float(m.get("created") or m.get("at") or now), float(m.get("at") or now),
+                 str(m.get("title") or ""), str(m.get("artist") or ""), str(m.get("client") or ""))
+            )
+    except Exception:
+        pass
+
+def _cache_db_delete(vid: str):
+    if not _use_cache_db():
+        return
+    try:
+        with db() as con:
+            con.execute("DELETE FROM cache_entries WHERE video_id=?", (vid,))
+    except Exception:
+        pass
+
+def _cache_sync_db():
+    """Sincroniza .meta.json existentes no disco para a tabela cache_entries no arranque."""
+    if not _use_cache_db():
+        return
+    try:
+        rows = []
+        for meta_p in CACHE_DIR.glob("*.meta.json"):
+            vid = meta_p.name[:-len(".meta.json")]
+            audio, _ = _cache_paths(vid)
+            if not audio.is_file():
+                meta_p.unlink(missing_ok=True)
+                continue
+            try:
+                m = json.loads(meta_p.read_text(encoding="utf-8"))
+                sz = audio.stat().st_size
+                if sz <= 0 or int(m.get("size") or 0) != sz:
+                    meta_p.unlink(missing_ok=True)
+                    continue
+                now = time.time()
+                rows.append((
+                    vid, str(m.get("content_type") or "audio/mp4"), sz,
+                    float(m.get("created") or m.get("at") or now),
+                    float(m.get("at") or now),
+                    str(m.get("title") or ""), str(m.get("artist") or ""), str(m.get("client") or "")
+                ))
+            except Exception:
+                meta_p.unlink(missing_ok=True)
+        if rows:
+            with db() as con:
+                con.executemany(
+                    """INSERT OR REPLACE INTO cache_entries
+                       (video_id, content_type, size, created, at, title, artist, client)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows
+                )
+    except Exception:
+        pass
+
+_cache_sync_db()
 
 def _cache_write_meta(vid: str, m: dict):
     _, meta_p = _cache_paths(vid)
     tmp = CACHE_DIR / f"{vid}.{uuid.uuid4().hex[:6]}.mtmp"
     tmp.write_text(json.dumps(m), encoding="utf-8")
     os.replace(tmp, meta_p)
+    _cache_db_upsert(vid, m)
 
 def _cache_lookup(vid: str):
     """Meta válido (áudio existe e o tamanho bate) ou None — se corrompido, apaga."""
     if not VID_RE.match(vid or ""):
         return None
     audio, meta_p = _cache_paths(vid)
-    if not audio.is_file() or not meta_p.is_file():
+    if not audio.is_file():
+        meta_p.unlink(missing_ok=True)
+        _cache_db_delete(vid)
+        return None
+    try:
+        actual_sz = audio.stat().st_size
+        if actual_sz <= 0:
+            raise ValueError("arquivo vazio")
+    except Exception:
+        return None
+    if _use_cache_db():
+        try:
+            with db() as con:
+                r = con.execute(
+                    "SELECT video_id, content_type, size, created, at, title, artist, client FROM cache_entries WHERE video_id=?",
+                    (vid,)
+                ).fetchone()
+            if r and int(r["size"] or 0) == actual_sz:
+                return dict(r)
+        except Exception:
+            pass
+    if not meta_p.is_file():
+        _cache_db_delete(vid)
         return None
     try:
         m = json.loads(meta_p.read_text(encoding="utf-8"))
-        if int(m.get("size") or 0) != audio.stat().st_size or audio.stat().st_size <= 0:
+        if int(m.get("size") or 0) != actual_sz:
             raise ValueError("tamanho divergente")
+        _cache_db_upsert(vid, m)
         return m
     except Exception:
         try:
             meta_p.unlink(missing_ok=True)
         except Exception:
             pass
+        _cache_db_delete(vid)
         return None
 
 def _cache_limit_bytes() -> int:
@@ -1793,64 +2029,133 @@ def _cache_evict():
     """Apaga itens até caber no limite. Com o cache INTELIGENTE ligado, a ordem de
     saída não é só "o mais antigo": cada repetição prorroga a permanência (música
     que você volta a ouvir fica) e favoritos só saem em último caso. Limpa órfãos."""
-    # leitura de banco + varredura do disco FORA do lock (não travar streams durante o scan)
+    global _last_part_prune
     limit = _cache_limit_bytes()
     smart = bool(SETTINGS.get("smart_cache", True))
+    now = time.time()
+
+    with _disk_lock:
+        prune_parts = (now - _last_part_prune) > 300
+        if prune_parts:
+            _last_part_prune = now
+
+    if prune_parts:
+        for junk in CACHE_DIR.glob("*.part"):
+            try:
+                if now - junk.stat().st_mtime > 3600:
+                    junk.unlink()
+            except Exception:
+                pass
+
+    entries = []   # (vid, sz, at, audio, meta_p)
+    total = 0
+
+    if _use_cache_db():
+        try:
+            with db() as con:
+                row_sum = con.execute("SELECT COALESCE(SUM(size), 0), COUNT(*) FROM cache_entries").fetchone()
+                total_db, cnt_db = int(row_sum[0] or 0), int(row_sum[1] or 0)
+            if cnt_db == 0 and any(CACHE_DIR.glob("*.meta.json")):
+                _cache_sync_db()
+                with db() as con:
+                    row_sum = con.execute("SELECT COALESCE(SUM(size), 0), COUNT(*) FROM cache_entries").fetchone()
+                    total_db = int(row_sum[0] or 0)
+            if total_db <= limit:
+                return
+            with db() as con:
+                db_rows = con.execute("SELECT video_id, size, at FROM cache_entries").fetchall()
+            stale = []
+            for r in db_rows:
+                vid = r["video_id"]
+                audio, meta_p = _cache_paths(vid)
+                if not audio.is_file():
+                    meta_p.unlink(missing_ok=True)
+                    stale.append(vid)
+                    continue
+                sz = int(r["size"] or 0) or audio.stat().st_size
+                at = float(r["at"] or 0)
+                total += sz
+                entries.append((vid, sz, at, audio, meta_p))
+            if stale:
+                with db() as con:
+                    con.executemany("DELETE FROM cache_entries WHERE video_id=?", [(v,) for v in stale])
+            if total <= limit:
+                return
+        except Exception:
+            entries = []
+            total = 0
+
+    if not entries and not _use_cache_db():
+        for meta_p in CACHE_DIR.glob("*.meta.json"):
+            vid = meta_p.name[:-len(".meta.json")]
+            audio, _ = _cache_paths(vid)
+            if not audio.is_file():
+                meta_p.unlink(missing_ok=True)
+                continue
+            try:
+                m = json.loads(meta_p.read_text(encoding="utf-8"))
+                sz = audio.stat().st_size
+                at = float(m.get("at") or 0)
+                total += sz
+                entries.append((vid, sz, at, audio, meta_p))
+            except Exception:
+                meta_p.unlink(missing_ok=True)
+        if total <= limit:
+            return
+
+    if not entries:
+        return
+
     favs, plays_map = set(), {}
     if smart:
         try:
             with db() as con:
-                favs = {r[0] for r in con.execute("SELECT video_id FROM favorites")}
+                favs = {r[0] for r in con.execute("SELECT DISTINCT video_id FROM favorites ORDER BY added_at DESC LIMIT 500")}
                 plays_map = {r[0]: int(r[1] or 0) for r in con.execute("SELECT video_id, n FROM plays")}
         except Exception:
             favs, plays_map = set(), {}
-    entries = []   # (at_ajustado, at_bruto, vid, audio, meta_p, size)
-    for meta_p in CACHE_DIR.glob("*.meta.json"):
-        vid = meta_p.name[:-len(".meta.json")]
-        audio, _ = _cache_paths(vid)
-        if not audio.is_file():
-            meta_p.unlink(missing_ok=True)
-            continue
-        try:
-            m = json.loads(meta_p.read_text(encoding="utf-8"))
-            at = float(m.get("at") or 0)
-            # cada repetição "rejuvenesce" o arquivo em 3h (teto 48 plays → 6 dias)
-            adj = at + (min(int(plays_map.get(vid, 0)), 48) * 3 * 3600 if smart else 0)
-            entries.append((adj, at, vid, audio, meta_p, audio.stat().st_size))
-        except Exception:
-            meta_p.unlink(missing_ok=True)
-    total = sum(e[5] for e in entries)
 
+    scored = [
+        (at + (min(int(plays_map.get(vid, 0)), 48) * 3 * 3600 if smart else 0), at, vid, audio, meta_p, sz)
+        for vid, sz, at, audio, meta_p in entries
+    ]
+
+    evicted_vids = []
     with _disk_lock:
         dead = set()
 
         def _kill(e):
             nonlocal total
             try:
-                e[3].unlink()
-                e[4].unlink()
+                e[3].unlink(missing_ok=True)
+                e[4].unlink(missing_ok=True)
             except Exception:
                 pass
             total -= e[5]
             dead.add(e[2])
+            evicted_vids.append(e[2])
 
         # passada 1: não-favoritos (mais antigos primeiro, já com o bônus de replay)
-        pool = [e for e in entries if not (smart and e[2] in favs)]
+        pool = [e for e in scored if not (smart and e[2] in favs)]
         for e in sorted(pool, key=lambda x: x[0]):
             if total <= limit:
                 break
             _kill(e)
         # passada 2: mesmo favorito sai se NADA mais resolver (mais antigo primeiro)
         if total > limit:
-            for e in sorted([e for e in entries if e[2] not in dead], key=lambda x: x[1]):
+            for e in sorted([e for e in scored if e[2] not in dead], key=lambda x: x[1]):
                 if total <= limit:
                     break
                 _kill(e)
-        now = time.time()
-        for junk in CACHE_DIR.glob("*.part"):
+
+    if evicted_vids:
+        with _cache_touch_lock:
+            for v in evicted_vids:
+                _cache_touch_mem.pop(v, None)
+        if _use_cache_db():
             try:
-                if now - junk.stat().st_mtime > 3600:
-                    junk.unlink()
+                with db() as con:
+                    con.executemany("DELETE FROM cache_entries WHERE video_id=?", [(v,) for v in evicted_vids])
             except Exception:
                 pass
 
@@ -2012,7 +2317,7 @@ def _serve_from_cache(vid: str, rng):
         else:
             start = int(a)
             if start >= size:
-                return None
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
             end = int(b) if b else size - 1
         end = min(end, size - 1)
         status = 206
@@ -2036,15 +2341,21 @@ def _serve_from_cache(vid: str, rng):
                 left -= len(chunk)
                 yield chunk
 
-    def _touch():
-        m2 = dict(m)
-        m2["at"] = time.time()
-        try:
-            _cache_write_meta(vid, m2)
-        except Exception:
-            pass
-
-    threading.Thread(target=_touch, daemon=True).start()
+    now_t = time.time()
+    should_touch = False
+    with _cache_touch_lock:
+        if now_t - _cache_touch_mem.get(vid, 0.0) >= _CACHE_TOUCH_TTL:
+            _cache_touch_mem[vid] = now_t
+            should_touch = True
+    if should_touch:
+        def _touch():
+            m2 = dict(m)
+            m2["at"] = now_t
+            try:
+                _cache_write_meta(vid, m2)
+            except Exception:
+                pass
+        threading.Thread(target=_touch, daemon=True).start()
     return StreamingResponse(_disk_iter(), status_code=status, headers=headers)
 
 def _prefetch_audio(vid: str, title: str = "", artist: str = ""):
@@ -2059,7 +2370,25 @@ def _prefetch_audio(vid: str, title: str = "", artist: str = ""):
         if _cache_lookup(vid):
             return
         upstream, data = open_upstream(vid, None)
+        if upstream.status_code >= 400:
+            st = upstream.status_code
+            c = (data or {}).get("client", "")
+            upstream.close()
+            _mark_bad_client(vid, c)
+            if st in (403, 410, 429) and c:
+                _client_mark_fail(c)
+                with _health_lock:
+                    _CLIENT_MS.pop(c, None)
+                    if _last_ok.get("label") == c:
+                        _last_ok["label"] = None
+            with _cache_lock:
+                cur = _stream_cache.get(vid)
+                if cur is not None and cur[1] is data:
+                    _stream_cache.pop(vid, None)
+            upstream, data = open_upstream(vid, None, force=True, avoid=_bad_clients_for(vid))
         try:
+            if upstream.status_code < 400:
+                _record_cdn_ok((data or {}).get("client", ""))
             plan = _cache_plan(upstream, None)
             if plan:
                 expected, ct = plan
@@ -2081,11 +2410,12 @@ def _prefetch_audio(vid: str, title: str = "", artist: str = ""):
 _warm_q: list = []
 _warm_set: set = set()
 _warm_lock = threading.Lock()
+_warm_cond = threading.Condition(_warm_lock)
 _warm_worker_on = False
 
 def _ensure_warm_worker():
     global _warm_worker_on
-    with _warm_lock:
+    with _warm_cond:
         if _warm_worker_on:
             return
         _warm_worker_on = True
@@ -2093,15 +2423,13 @@ def _ensure_warm_worker():
 
 def _warm_worker():
     while True:
-        with _warm_lock:
-            vid = _warm_q.pop(0) if _warm_q else None
-        if vid is None:
-            with _warm_lock:
-                if not _warm_q:
-                    _warm_set.clear()
-            time.sleep(1.0)
-            continue
+        with _warm_cond:
+            while not _warm_q:
+                _warm_set.clear()
+                _warm_cond.wait()
+            vid = _warm_q.pop(0)
         try:
+            _wait_if_user_busy()
             _prefetch_audio(vid)   # pula sozinho os que já estão no cache
         except Exception:
             pass
@@ -2196,9 +2524,17 @@ def open_upstream(video_id: str, range_header, force: bool = False,
     headers = {"User-Agent": UA, **(data.get("headers") or {})}
     if range_header:
         headers["Range"] = range_header
+    target = alt_url or data["url"]
     proxies = {"https": YT_PROXY} if YT_PROXY else None
-    resp = session.get(alt_url or data["url"], headers=headers, stream=True,
+    resp = session.get(target, headers=headers, stream=True,
                        timeout=(5, 30), proxies=proxies)
+    # Alguns streams do googlevideo (ex.: TVHTML5 itag=140) rejeitam "Range: bytes=0-"
+    # com 403 mas entregam 200 OK sem Range — satisfaz igualmente pedidos do byte 0.
+    if resp.status_code == 403 and range_header and re.match(r"^bytes=0-$", range_header.strip(), re.I):
+        resp.close()
+        headers.pop("Range", None)
+        resp = session.get(target, headers=headers, stream=True,
+                           timeout=(5, 30), proxies=proxies)
     return resp, data
 
 def _friendly_error(e: Exception) -> str:
@@ -2219,6 +2555,7 @@ def _friendly_error(e: Exception) -> str:
 SEARCH_LIMIT = 10
 SEARCH_TIMEOUT = 10    # era 20: YTMusic travando custava 20s ANTES do plano B
 SEARCH_TTL = 600
+_mem_cache_lock = threading.Lock()
 _search_cache: dict[str, tuple[float, list]] = {}
 _search_pool = cf.ThreadPoolExecutor(max_workers=4)   # separado da extração
 _ytm_down_until = 0.0   # circuit breaker: YT Music falhando → yt-dlp direto por 5 min
@@ -2260,9 +2597,10 @@ def search_songs(query: str, limit: int = SEARCH_LIMIT):
     global _ytm_down_until, yt
     limit = max(1, min(limit, SEARCH_LIMIT))   # teto duro: 10 resultados, sempre
     key = f"{query.lower().strip()}|{limit}"
-    hit = _search_cache.get(key)
-    if hit and time.time() - hit[0] < SEARCH_TTL:
-        return hit[1]
+    with _mem_cache_lock:
+        hit = _search_cache.get(key)
+        if hit and time.time() - hit[0] < SEARCH_TTL:
+            return hit[1]
     results = None
     if time.time() >= _ytm_down_until:
         try:
@@ -2293,10 +2631,11 @@ def search_songs(query: str, limit: int = SEARCH_LIMIT):
             "channelId": ch_id,
             "thumbnail": f"/api/thumb/{r['videoId']}", "duration": r.get("duration"),
         })
-    _search_cache[key] = (time.time(), out)
-    if len(_search_cache) > 200:   # nunca era limpo: crescia sem limite na sessão longa
-        for k, _ in sorted(_search_cache.items(), key=lambda kv: kv[1][0])[:100]:
-            _search_cache.pop(k, None)
+    with _mem_cache_lock:
+        _search_cache[key] = (time.time(), out)
+        if len(_search_cache) > 200:   # nunca era limpo: crescia sem limite na sessão longa
+            for k, _ in sorted(_search_cache.items(), key=lambda kv: kv[1][0])[:100]:
+                _search_cache.pop(k, None)
     return out
 
 # ---------- Sugestões de busca (mesma engine de autocomplete do YouTube) ----------
@@ -2308,9 +2647,10 @@ def suggest(q: str = Query(..., min_length=2)):
     if len(q) < 2:
         return {"items": []}
     key = q.lower()
-    hit = _sugg_cache.get(key)
-    if hit and time.time() - hit[0] < 3600:
-        return {"items": hit[1]}
+    with _mem_cache_lock:
+        hit = _sugg_cache.get(key)
+        if hit and time.time() - hit[0] < 3600:
+            return {"items": hit[1]}
     items: list = []
     try:
         r = session.get("https://suggestqueries.google.com/complete/search",
@@ -2321,9 +2661,10 @@ def suggest(q: str = Query(..., min_length=2)):
             items = [s for s in data[1] if isinstance(s, str)][:8]
     except Exception:
         pass
-    _sugg_cache[key] = (time.time(), items)
-    if len(_sugg_cache) > 300:
-        _sugg_cache.clear()
+    with _mem_cache_lock:
+        _sugg_cache[key] = (time.time(), items)
+        if len(_sugg_cache) > 300:
+            _sugg_cache.clear()
     return {"items": items}
 
 # ---------- Rádio (mix estilo "Start radio" do Metrolist: RD{video_id}) ----------
@@ -2380,17 +2721,19 @@ def _radio_fetch(video_id: str) -> list:
         raise RuntimeError("mix de rádio veio vazio (YouTube intermitente) — tente de novo")
     return out
 
-def _known_blend(tracks: list, seed_id: str, k: int = 4) -> list:
-    """Mistura até k faixas que você JÁ CONHECE (favoritos; se faltar, histórico)
-    no meio do mix do YouTube — é o que faz a estação ficar com conhecidas + descobertas."""
+def _known_blend(tracks: list, seed_id: str, user_id: int = 1, k: int = 4) -> list:
+    """Mistura até k faixas que ESTE usuário já conhece (favoritos; se faltar, histórico)."""
     try:
         with db() as con:
             rows = [dict(r) for r in con.execute(
-                "SELECT video_id, title, artist, thumbnail FROM favorites ORDER BY RANDOM() LIMIT ?", (k,))]
+                "SELECT video_id, title, artist, thumbnail FROM favorites WHERE user_id=? ORDER BY RANDOM() LIMIT ?",
+                (user_id, k))]
             if len(rows) < k:
                 got = {r["video_id"] for r in rows} | {seed_id}
-                for r in con.execute("SELECT video_id, title, artist, thumbnail FROM history ORDER BY RANDOM() LIMIT ?",
-                                     (k * 3,)):
+                for r in con.execute(
+                    "SELECT video_id, title, artist, thumbnail FROM history WHERE user_id=? ORDER BY RANDOM() LIMIT ?",
+                    (user_id, k * 3),
+                ):
                     if r["video_id"] not in got:
                         rows.append(dict(r))
                         got.add(r["video_id"])
@@ -2411,26 +2754,27 @@ def _known_blend(tracks: list, seed_id: str, k: int = 4) -> list:
     return out
 
 @app.get("/api/radio/{video_id}")
-def radio(video_id: str, known: int = 0):
-    """Mix RD da semente. Com ?known=1 (usado pelas ESTAÇÕES) entra uma pitada
-    de faixas que você já conhece no meio das descobertas."""
+def radio(video_id: str, request: Request, known: int = 0):
+    """Mix RD da semente. Com ?known=1 mistura faixas do usuário sem vazar entre perfis."""
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
+    u = _current_user(request)
     known = bool(known)
-    key = (video_id, known)
-    hit = _radio_cache.get(key)
+    with _mem_cache_lock:
+        hit = _radio_cache.get(video_id)
     if hit and time.time() - hit[0] < 6 * 3600:
-        return {"id": f"RD{video_id}", "title": "Rádio", "tracks": hit[1], "cached": True}
+        tracks = _known_blend(hit[1], video_id, user_id=u["id"]) if known else list(hit[1])
+        return {"id": f"RD{video_id}", "title": "Rádio", "tracks": tracks, "cached": True}
     try:
-        tracks = _pl_pool.submit(_radio_fetch, video_id).result(timeout=75)
+        raw_tracks = _pl_pool.submit(_radio_fetch, video_id).result(timeout=75)
     except Exception as e:
         raise HTTPException(502, _friendly_error(e))
-    if known:
-        tracks = _known_blend(tracks, video_id)
-    _radio_cache[key] = (time.time(), tracks)
-    if len(_radio_cache) > 100:
-        for k_old, _ in sorted(_radio_cache.items(), key=lambda kv: kv[1][0])[:50]:
-            _radio_cache.pop(k_old, None)
+    with _mem_cache_lock:
+        _radio_cache[video_id] = (time.time(), raw_tracks)
+        if len(_radio_cache) > 100:
+            for k_old, _ in sorted(_radio_cache.items(), key=lambda kv: kv[1][0])[:50]:
+                _radio_cache.pop(k_old, None)
+    tracks = _known_blend(raw_tracks, video_id, user_id=u["id"]) if known else list(raw_tracks)
     return {"id": f"RD{video_id}", "title": "Rádio", "tracks": tracks, "cached": False}
 
 def row(r): return {k: r[k] for k in r.keys()} if r else None
@@ -2448,12 +2792,6 @@ def track_row(r):
 # EMBUTIDOS em base64 e _ensure_assets() recria os arquivos se faltarem —
 # servindo só por arquivo (como o zcode deixou), ícone apagado virava 404 eterno.
 import base64 as _b64
-_EMBEDDED_ASSETS: dict[str, str] = {
-    "manifest.webmanifest": "ewogICJuYW1lIjogIlN0cmVtTXVzaWMiLAogICJzaG9ydF9uYW1lIjogIlN0cmVtTXVzaWMiLAogICJkZXNjcmlwdGlvbiI6ICJQbGF5ZXIgZGUgbcO6c2ljYSBkbyBZb3VUdWJlIGNvbSBjYWNoZSBsb2NhbCwgZG93bmxvYWRzIGUgcGxheWxpc3RzLiIsCiAgImxhbmciOiAicHQtQlIiLAogICJzdGFydF91cmwiOiAiLyIsCiAgInNjb3BlIjogIi8iLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJvcmllbnRhdGlvbiI6ICJhbnkiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiMwMjA2MTciLAogICJ0aGVtZV9jb2xvciI6ICIjMDIwNjE3IiwKICAiaWNvbnMiOiBbCiAgICB7ICJzcmMiOiAiL2ljb24tMTkyLnBuZyIsICJzaXplcyI6ICIxOTJ4MTkyIiwgInR5cGUiOiAiaW1hZ2UvcG5nIiwgInB1cnBvc2UiOiAiYW55IiB9LAogICAgeyAic3JjIjogIi9pY29uLTUxMi5wbmciLCAic2l6ZXMiOiAiNTEyeDUxMiIsICJ0eXBlIjogImltYWdlL3BuZyIsICJwdXJwb3NlIjogImFueSIgfSwKICAgIHsgInNyYyI6ICIvaWNvbi1tYXNrYWJsZS01MTIucG5nIiwgInNpemVzIjogIjUxMng1MTIiLCAidHlwZSI6ICJpbWFnZS9wbmciLCAicHVycG9zZSI6ICJtYXNrYWJsZSIgfQogIF0KfQo=",
-    "icon-192.png": "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",
-    "icon-512.png": "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",
-    "icon-maskable-512.png": "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",
-}
 
 def _ensure_assets():
     for _name, _b64s in _EMBEDDED_ASSETS.items():
@@ -2480,11 +2818,7 @@ def _icon_response(size: int, filename: str):
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    f = BASE / "icon-192.png"
-    if f.is_file():
-        return FileResponse(str(f), media_type="image/png",
-                            headers={"Cache-Control": "public, max-age=86400"})
-    return Response(content=b"", media_type="image/x-icon")
+    return _icon_response(192, "icon-192.png")
 
 @app.get("/icon-192.png", include_in_schema=False)
 def icon_192(): return _icon_response(192, "icon-192.png")
@@ -2499,19 +2833,25 @@ def icon_maskable(): return _icon_response(512, "icon-maskable-512.png")
 def manifest(request: Request):
     _ensure_assets()
     f = BASE / "manifest.webmanifest"
-    if not f.is_file():
-        raise HTTPException(404, "manifest não encontrado")
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-        sk_cookie = request.cookies.get("sk") or request.query_params.get("sk") or ""
+        raw = f.read_text(encoding="utf-8") if f.is_file() else _b64.b64decode(_EMBEDDED_ASSETS["manifest.webmanifest"]).decode("utf-8")
+        data = json.loads(raw)
+        sk_tok = request.query_params.get("sk") or request.cookies.get("sk") or ""
         key = _pair_key()
-        if sk_cookie and _safe_eq(sk_cookie, key):
-            data["start_url"] = f"/?sk={key}"
+        if sk_tok:
+            if _safe_eq(sk_tok, key):
+                data["start_url"] = f"/?sk={urllib.parse.quote(key, safe='-_.~')}"
+            else:
+                matched = _get_user_by_token(sk_tok)
+                if matched:
+                    tok_q = urllib.parse.quote(matched["token"], safe="-_.~")
+                    data["start_url"] = f"/?sk={tok_q}"
         return Response(content=json.dumps(data, ensure_ascii=False),
                         media_type="application/manifest+json",
                         headers={"Cache-Control": "no-cache"})
     except Exception:
-        return Response(content=f.read_bytes(), media_type="application/manifest+json",
+        fallback = f.read_bytes() if f.is_file() else _b64.b64decode(_EMBEDDED_ASSETS["manifest.webmanifest"])
+        return Response(content=fallback, media_type="application/manifest+json",
                         headers={"Cache-Control": "public, max-age=3600"})
 
 @app.get("/sw.js", include_in_schema=False)
@@ -2521,6 +2861,22 @@ def service_worker():
         raise HTTPException(404, "sw.js não encontrado")
     return FileResponse(str(f), media_type="application/javascript",
                         headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+@app.get("/static/app.css", include_in_schema=False)
+def static_app_css():
+    f = BASE / "static" / "app.css"
+    if not f.is_file():
+        raise HTTPException(404, "app.css não encontrado")
+    return FileResponse(str(f), media_type="text/css; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
+
+@app.get("/static/app.js", include_in_schema=False)
+def static_app_js():
+    f = BASE / "static" / "app.js"
+    if not f.is_file():
+        raise HTTPException(404, "app.js não encontrado")
+    return FileResponse(str(f), media_type="application/javascript; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
 
 # ---------- Letras multi-fonte (LRCLIB sincronizada + YouTube Music) ----------
 # 1º LRCLIB (lrclib.net — gratuito, sem chave): letra SIMPLES + SINCRONIZADA (LRC)
@@ -2672,7 +3028,8 @@ def index():
     raise HTTPException(500, "index.html não encontrado.")
 
 @app.get("/api/search")
-def search(q: str = Query(..., min_length=1), limit: int = Query(SEARCH_LIMIT, ge=1, le=SEARCH_LIMIT)):
+def search(request: Request, q: str = Query(..., min_length=1), limit: int = Query(SEARCH_LIMIT, ge=1, le=SEARCH_LIMIT)):
+    _check_rate_limit(request, "search")
     results = search_songs(q, limit)
     if results:
         # pré-aquece as 3 primeiras: clicar em qualquer uma delas toca quase na hora
@@ -2700,7 +3057,8 @@ def _flat_track(e) -> dict | None:
             "thumbnail": f"/api/thumb/{vid}", "duration": dur_s}
 
 @app.get("/api/artist")
-def artist_tracks(id: str = "", name: str = ""):
+def artist_tracks(request: Request, id: str = "", name: str = ""):
+    _check_rate_limit(request, "search")
     name = (name or "").strip()
     aid = (id or "").strip()
     if aid and not aid.startswith("UC"):
@@ -2758,7 +3116,8 @@ def artist_tracks(id: str = "", name: str = ""):
     return payload
 
 @app.get("/api/resolve/{video_id}")
-def resolve(video_id: str, title: str = "", artist: str = ""):
+def resolve(video_id: str, request: Request, title: str = "", artist: str = ""):
+    _check_rate_limit(request, "stream")
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
     try:
@@ -2799,6 +3158,7 @@ def _wanted_scope(fn):
 @app.get("/api/stream/{video_id}")
 @_wanted_scope
 def stream(video_id: str, request: Request):
+    _check_rate_limit(request, "stream")
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
     rng = request.headers.get("range")
@@ -2807,7 +3167,7 @@ def stream(video_id: str, request: Request):
     # em si é contado só nas saídas bem-sucedidas, pra retry de erro não inflar)
     first_try = not retry
     u = _current_user(request)
-    uid = int(u.get("id") or 1)
+    uid = int(u["id"]) if u.get("id") is not None else 1
     if first_try:
         now = time.time()
         with _last_stream_lock:
@@ -2838,53 +3198,64 @@ def stream(video_id: str, request: Request):
             _session_serve("cache", int(cached.headers.get("Content-Length") or 0))
             return cached
     tried = []
+    tried_set = set()
     def _note_fail(d, st):
         # marca o client como ruim pra este vídeo + tira a URL podre do cache
         c = (d or {}).get("client", "")
-        if c and c not in tried:
-            tried.append(c)
+        if c:
+            tried_set.add(c)
+            if c not in tried:
+                tried.append(c)
         _mark_bad_client(video_id, c)
+        if st in (403, 410, 429) and c:
+            _client_mark_fail(c)
+            with _health_lock:
+                _CLIENT_MS.pop(c, None)
+                if _last_ok.get("label") == c:
+                    _last_ok["label"] = None
         with _cache_lock:
             cur = _stream_cache.get(video_id)
             if cur is not None and cur[1] is d:
                 _stream_cache.pop(video_id, None)
+
+    def _try_alts(u, d, max_alts=2):
+        for alt in list((d.get("alts") or []))[:max_alts]:
+            if u.status_code < 400:
+                break
+            st = u.status_code
+            u.close()
+            print(f"⚠️ HTTP {st} em {video_id} (client {d.get('client')}); tentando formato alternativo do mesmo client...")
+            u, d = open_upstream(video_id, rng, data=d, alt_url=alt)
+        return u, d
+
     try:
         # No retry (?r= do frontend) evita DE CARA os clients que acabaram de
         # devolver 403 neste vídeo: sem isso o retry repetia o MESMO client
         # queimado (extração inteira de novo + 403 de novo = ~17s perdidos).
-        # Só no retry: com 'avoid' o cache de URL é ignorado, e no caminho
-        # normal nós QUEREMOS aproveitar a URL pré-aquecida.
         upstream, data = open_upstream(video_id, rng, ignore_cooldown=retry, urgent=True,
                                        avoid=_bad_clients_for(video_id) if retry else ())
 
-        # Escada de contorno pós-403 (cada degrau só roda se o anterior falhou):
+        # Escada de contorno pós-403:
         # 1) formato ALTERNATIVO da MESMA extração — o SABR às vezes trava só um itag
-        for alt in list((data.get("alts") or []))[:2]:
+        upstream, data = _try_alts(upstream, data, max_alts=2)
+
+        # 2) troca de client percorrendo TODOS os clients disponíveis (não só 1 troca)
+        max_swaps = max(1, len(_clients_full()))
+        for _ in range(max_swaps):
             if upstream.status_code < 400:
                 break
             st = upstream.status_code
             upstream.close()
             _note_fail(data, st)
-            print(f"⚠️ HTTP {st} em {video_id} (client {data.get('client')}); tentando formato alternativo do mesmo client...")
-            upstream, data = open_upstream(video_id, rng, data=data, alt_url=alt)
-        # 2) troca de client (evitando os que já devolveram 403 para este vídeo)
-        if upstream.status_code >= 400:
-            st = upstream.status_code
-            upstream.close()
-            _note_fail(data, st)
+            avoid_now = tried_set | _bad_clients_for(video_id)
+            if len(avoid_now) >= len(_clients_full()):
+                break
             print(f"⚠️ HTTP {st} no stream de {video_id} (client {data.get('client')}), trocando de client...")
             upstream, data = open_upstream(video_id, rng, force=True,
-                                           avoid=_bad_clients_for(video_id), urgent=True)
-        # 3) um formato alternativo do novo client
-        for alt in list((data.get("alts") or []))[:1]:
-            if upstream.status_code < 400:
-                break
-            st = upstream.status_code
-            upstream.close()
-            _note_fail(data, st)
-            print(f"⚠️ HTTP {st} em {video_id} (client {data.get('client')}); formato alternativo do novo client...")
-            upstream, data = open_upstream(video_id, rng, data=data, alt_url=alt)
-        # 4) última cartada no servidor: o 403 do googlevideo costuma ser transitório —
+                                           avoid=avoid_now, urgent=True)
+            upstream, data = _try_alts(upstream, data, max_alts=1)
+
+        # 3) última cartada no servidor: o 403 do googlevideo costuma ser transitório —
         #    pausa curta e extração novinha sem evitar ninguém
         if upstream.status_code >= 400:
             st = upstream.status_code
@@ -2902,7 +3273,7 @@ def stream(video_id: str, request: Request):
         url = (data or {}).get("url") or ""
         upstream.close()
         _note_fail(data, st)
-        # 5) último recurso: devolve 302 e deixa o NAVEGADOR buscar direto no
+        # 4) último recurso: devolve 302 e deixa o NAVEGADOR buscar direto no
         #    googlevideo — a impressão digital TLS/headers do navegador às vezes
         #    passa onde o requests do Python leva 403. Pior cenário: o <audio>
         #    dispara 'error' e o app pula pra próxima faixa (nunca fica mudo).
@@ -2916,6 +3287,8 @@ def stream(video_id: str, request: Request):
                  "    Se persistir: USE_COOKIES=1 com um cookies.txt do navegador,"
                  " ou rode `pip install -U yt-dlp`.") if st in (403, 410) else ""
         raise HTTPException(502, f"Upstream HTTP {st} (clients tentados: {', '.join(tried) or (data or {}).get('client')}).{extra}")
+
+    _record_cdn_ok((data or {}).get("client", ""))
 
     passthrough = {}
     for h in ("Content-Type", "Content-Range", "Accept-Ranges"):
@@ -2973,7 +3346,10 @@ def stream(video_id: str, request: Request):
 
 # ---------- Configurações (painel Config) ----------
 @app.get("/api/settings")
-def get_settings():
+def get_settings(request: Request):
+    u = _current_user(request)
+    if not u.get("is_admin"):
+        return {"settings": {"learn_next": bool(SETTINGS.get("learn_next", True))}}
     pub_settings = dict(SETTINGS)
     pub_settings.pop("pair_key", None)
     return {
@@ -3012,7 +3388,7 @@ def _apply_settings(data: dict) -> list:
         if n is None:
             errs.append("cache_limit_mb não é número")
         else:
-            SETTINGS["cache_limit_mb"] = max(50, min(1024, n))
+            SETTINGS["cache_limit_mb"] = max(50, min(10240, n))
     if "race_wave" in data:
         n = as_int(data["race_wave"])
         if n is None:
@@ -3036,7 +3412,8 @@ def _apply_settings(data: dict) -> list:
     return errs
 
 @app.post("/api/settings")
-def update_settings(data: dict):
+def update_settings(data: dict, request: Request):
+    _require_admin(request)
     if not isinstance(data, dict):
         raise HTTPException(400, "o corpo deve ser um objeto JSON")
     errs = _apply_settings(data)
@@ -3048,29 +3425,66 @@ def update_settings(data: dict):
 
 # ---------- Cache local (painel Config) ----------
 @app.get("/api/cache/stats")
-def cache_stats():
+def cache_stats(request: Request):
+    _require_admin(request)
     items, used = [], 0
-    for meta_p in CACHE_DIR.glob("*.meta.json"):
-        vid = meta_p.name[:-len(".meta.json")]
-        audio, _ = _cache_paths(vid)
-        if not audio.is_file():
-            continue
-        try:
-            m = json.loads(meta_p.read_text(encoding="utf-8"))
-            size = audio.stat().st_size
+    if _use_cache_db():
+        with db() as con:
+            rows = con.execute(
+                "SELECT video_id, title, artist, size, at FROM cache_entries ORDER BY at DESC"
+            ).fetchall()
+        if not rows and any(CACHE_DIR.glob("*.meta.json")):
+            _cache_sync_db()
+            with db() as con:
+                rows = con.execute(
+                    "SELECT video_id, title, artist, size, at FROM cache_entries ORDER BY at DESC"
+                ).fetchall()
+        stale = []
+        for r in rows:
+            vid = r["video_id"]
+            audio, _ = _cache_paths(vid)
+            if not audio.is_file():
+                stale.append(vid)
+                continue
+            size = int(r["size"] or 0) or audio.stat().st_size
             used += size
+            at_val = float(r["at"] or 0)
             items.append({
                 "video_id": vid,
-                "title": m.get("title") or "",
-                "artist": m.get("artist") or "",
+                "title": r["title"] or "",
+                "artist": r["artist"] or "",
                 "size_bytes": size,
                 "size_mb": round(size / 1048576, 1),
-                "at": (datetime.datetime.fromtimestamp(float(m["at"])).isoformat(timespec="seconds")
-                       if m.get("at") else ""),
+                "at": datetime.datetime.fromtimestamp(at_val).isoformat(timespec="seconds") if at_val else "",
             })
-        except Exception:
-            continue
-    items.sort(key=lambda x: x["at"], reverse=True)
+        if stale:
+            try:
+                with db() as con:
+                    con.executemany("DELETE FROM cache_entries WHERE video_id=?", [(v,) for v in stale])
+            except Exception:
+                pass
+    else:
+        for meta_p in CACHE_DIR.glob("*.meta.json"):
+            vid = meta_p.name[:-len(".meta.json")]
+            audio, _ = _cache_paths(vid)
+            if not audio.is_file():
+                continue
+            try:
+                m = json.loads(meta_p.read_text(encoding="utf-8"))
+                size = audio.stat().st_size
+                used += size
+                items.append({
+                    "video_id": vid,
+                    "title": m.get("title") or "",
+                    "artist": m.get("artist") or "",
+                    "size_bytes": size,
+                    "size_mb": round(size / 1048576, 1),
+                    "at": (datetime.datetime.fromtimestamp(float(m["at"])).isoformat(timespec="seconds")
+                           if m.get("at") else ""),
+                })
+            except Exception:
+                continue
+        items.sort(key=lambda x: x["at"], reverse=True)
     # estatísticas de sessão + inteligentes (restauradas — o zcode tinha
     # reconstruído este endpoint sem elas: os dados eram coletados por
     # _session_serve() no stream mas nunca mais expostos pra UI)
@@ -3110,25 +3524,43 @@ def _cache_delete(vid: str) -> bool:
                 ok = True
             except Exception:
                 pass
+    with _cache_touch_lock:
+        _cache_touch_mem.pop(vid, None)
+    _cache_db_delete(vid)
     return ok
 
 @app.delete("/api/cache")
-def cache_clear():
+def cache_clear(request: Request):
+    _require_admin(request)
     n = 0
     with _disk_lock:   # não apagar pela metade enquanto um stream promove o cache
-        for meta_p in CACHE_DIR.glob("*.meta.json"):
-            if _cache_delete(meta_p.name[:-len(".meta.json")]):
-                n += 1
+        for p in list(CACHE_DIR.glob("*.meta.json")) + list(CACHE_DIR.glob("*.audio")):
+            try:
+                if p.is_file():
+                    p.unlink()
+                    if p.name.endswith(".meta.json"):
+                        n += 1
+            except Exception:
+                pass
         for part in CACHE_DIR.glob("*.part"):
             try:
                 part.unlink()
                 n += 1
             except Exception:
                 pass
+    with _cache_touch_lock:
+        _cache_touch_mem.clear()
+    if _use_cache_db():
+        try:
+            with db() as con:
+                con.execute("DELETE FROM cache_entries")
+        except Exception:
+            pass
     return {"ok": True, "removed": n}
 
 @app.delete("/api/cache/{video_id}")
-def cache_delete_one(video_id: str):
+def cache_delete_one(video_id: str, request: Request):
+    _require_admin(request)
     if not VID_RE.match(video_id):
         raise HTTPException(400, "video_id inválido")
     return {"ok": _cache_delete(video_id)}
@@ -3146,25 +3578,34 @@ def cache_warm(body: dict):
         raise HTTPException(400, "corpo deve ser {\"ids\": [...]}")
     _ensure_warm_worker()
     n = 0
-    with _warm_lock:
+    with _warm_cond:
         for v in ids[:50]:
             v = str(v or "")
             if VID_RE.match(v) and v not in _warm_set:
                 _warm_set.add(v)
                 _warm_q.append(v)
                 n += 1
+        if n:
+            _warm_cond.notify_all()
     return {"ok": True, "queued": n}
 
 # ---------- Saúde do motor de extração (apontamento do Argon) ----------
 # O _client_health só aparecia no terminal; agora o painel VÊ e PODE resetar.
 @app.get("/api/clients/health")
-def clients_health():
+def clients_health(request: Request):
+    _require_admin(request)
     now = time.time()
+    with _health_lock:
+        health_snap = {k: dict(v) for k, v in _client_health.items()}
+        ms_snap = dict(_CLIENT_MS)
+        ejs_needed = _EJS.get("needed")
+        probe_at = int(_EJS.get("at") or 0) or None
+        probe_ms = _EJS.get("last_ms")
 
     def _state(c):
         lbl = _label(c)
-        h = _client_health.get(lbl)
-        ms = _CLIENT_MS.get(lbl)
+        h = health_snap.get(lbl)
+        ms = ms_snap.get(lbl)
         if not h:
             return {"label": lbl, "state": "novo", "fails": 0, "resting_s": 0,
                     "last_try_s_ago": None, "ms": ms}
@@ -3185,24 +3626,26 @@ def clients_health():
             "extract_timeout": max(5, min(90, int(SETTINGS.get("extract_timeout") or EXTRACT_TIMEOUT))),
             "po_token": bool(_POT_PLUGIN_OK),
             # ---- resultado dos "pre-tests" (sondagem medida, não chutada) ----
-            "ejs": _EJS.get("needed"),
-            "probe_at": int(_EJS.get("at") or 0) or None,
-            "probe_ms": _EJS.get("last_ms"),
+            "ejs": ejs_needed,
+            "probe_at": probe_at,
+            "probe_ms": probe_ms,
             "probe_running": _probe_lock.locked()}
 
 @app.post("/api/clients/probe")
-def clients_probe():
+def clients_probe(request: Request):
     """Roda a sondagem AGORA (mede os clients com o vídeo-canário). Roda em
     segundo plano: a resposta volta na hora e o painel consulta /health."""
+    _require_admin(request)
     if _probe_lock.locked():
         return {"ok": True, "started": False, "motivo": "já está medindo"}
     threading.Thread(target=_probe_engine, kwargs={"full": True}, daemon=True).start()
     return {"ok": True, "started": True}
 
 @app.post("/api/clients/reset")
-def clients_reset():
+def clients_reset(request: Request):
     """Força TODOS os clients de volta à disputa na próxima faixa (folga zerada,
     'client preferido' esquecido, marcações 403 por vídeo limpas)."""
+    _require_admin(request)
     with _health_lock:
         n = len(_client_health)
         _client_health.clear()
@@ -3230,7 +3673,7 @@ def api_me(request: Request):
 @app.post("/api/logout")
 def api_logout():
     resp = Response(json.dumps({"ok": True}), media_type="application/json")
-    resp.delete_cookie("sk")
+    resp.delete_cookie("sk", path="/", samesite="lax")
     return resp
 
 # ---------- Favoritos (isolados por usuário) ----------
@@ -3244,6 +3687,7 @@ def list_favorites(request: Request):
 
 @app.post("/api/favorites/{video_id}")
 def add_favorite(video_id: str, request: Request, title: str = "", artist: str = "", thumbnail: str = ""):
+    video_id = _valid_track_id(video_id)
     u = _current_user(request)
     with db() as con:
         con.execute("INSERT OR REPLACE INTO favorites (user_id, video_id, title, artist, thumbnail, added_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
@@ -3252,6 +3696,7 @@ def add_favorite(video_id: str, request: Request, title: str = "", artist: str =
 
 @app.delete("/api/favorites/{video_id}")
 def del_favorite(video_id: str, request: Request):
+    video_id = _valid_track_id(video_id)
     u = _current_user(request)
     with db() as con:
         con.execute("DELETE FROM favorites WHERE user_id=? AND video_id=?", (u["id"], video_id))
@@ -3268,6 +3713,7 @@ def get_history(request: Request):
 
 @app.post("/api/history/{video_id}")
 def add_history(video_id: str, request: Request, title: str = "", artist: str = "", thumbnail: str = ""):
+    video_id = _valid_track_id(video_id)
     u = _current_user(request)
     with db() as con:
         con.execute("INSERT OR REPLACE INTO history (user_id, video_id, title, artist, thumbnail, played_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
@@ -3287,6 +3733,7 @@ def clear_history(request: Request):
 
 @app.delete("/api/history/{video_id}")
 def delete_history_item(video_id: str, request: Request):
+    video_id = _valid_track_id(video_id)
     u = _current_user(request)
     with db() as con:
         cur = con.execute("DELETE FROM history WHERE user_id=? AND video_id=?", (u["id"], video_id))
@@ -3371,15 +3818,17 @@ def create_playlist(name: str, request: Request):
 def delete_playlist(pid: int, request: Request):
     u = _current_user(request)
     with db() as con:
-        con.execute("DELETE FROM local_playlists WHERE id=? AND (user_id=? OR ?=1)", (pid, u["id"], u.get("is_admin", 0)))
+        _require_playlist_owner(con, pid, u, allow_admin=True)
+        con.execute("DELETE FROM local_playlists WHERE id=?", (pid,))
         con.execute("DELETE FROM playlist_items WHERE playlist_id=?", (pid,))
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/items/{video_id}")
-def add_to_playlist(pid: int, video_id: str, title: str = "", artist: str = "", thumbnail: str = ""):
+def add_to_playlist(pid: int, video_id: str, request: Request, title: str = "", artist: str = "", thumbnail: str = ""):
+    video_id = _valid_track_id(video_id)
+    u = _current_user(request)
     with db() as con:
-        if not con.execute("SELECT 1 FROM local_playlists WHERE id=?", (pid,)).fetchone():
-            raise HTTPException(404, "Playlist não encontrada")
+        _require_playlist_owner(con, pid, u)
         pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM playlist_items WHERE playlist_id=?",
                           (pid,)).fetchone()[0]
         con.execute("INSERT OR REPLACE INTO playlist_items VALUES (?,?,?,?,?,?)",
@@ -3387,12 +3836,15 @@ def add_to_playlist(pid: int, video_id: str, title: str = "", artist: str = "", 
     return {"ok": True}
 
 @app.delete("/api/playlists/{pid}/items/{video_id}")
-def remove_from_playlist(pid: int, video_id: str):
+def remove_from_playlist(pid: int, video_id: str, request: Request):
+    video_id = _valid_track_id(video_id)
+    u = _current_user(request)
     with db() as con:
+        _require_playlist_owner(con, pid, u)
         con.execute("DELETE FROM playlist_items WHERE playlist_id=? AND video_id=?", (pid, video_id))
     return {"ok": True}
 
-# ---------- Estações (rádios nomeadas que ficam salvas) ----------
+# ---------- Estações (rádios nomeadas que ficam salvas, isoladas por usuário) ----------
 def _station_row(r):
     d = row(r)
     if d:
@@ -3403,12 +3855,14 @@ def _station_row(r):
     return d
 
 @app.get("/api/stations")
-def list_stations():
+def list_stations(request: Request):
+    u = _current_user(request)
     with db() as con:
-        return [_station_row(r) for r in con.execute("SELECT * FROM stations ORDER BY name")]
+        return [_station_row(r) for r in con.execute(
+            "SELECT * FROM stations WHERE user_id=? ORDER BY name", (u["id"],))]
 
 @app.post("/api/stations")
-def create_station(data: dict):
+def create_station(data: dict, request: Request):
     """Cria uma estação a partir de uma faixa-semente do YouTube. Nome é
     obrigatório; criar a mesma semente 2x não duplica."""
     if not isinstance(data, dict):
@@ -3419,27 +3873,31 @@ def create_station(data: dict):
         raise HTTPException(400, "a estação precisa de um nome")
     if not VID_RE.match(vid):
         raise HTTPException(400, "videoId inválido — a estação nasce de uma faixa do YouTube")
+    u = _current_user(request)
     with db() as con:
-        dup = con.execute("SELECT id FROM stations WHERE name=? AND seed_id=?", (name, vid)).fetchone()
+        dup = con.execute("SELECT id FROM stations WHERE user_id=? AND name=? AND seed_id=?",
+                          (u["id"], name, vid)).fetchone()
         if dup:
             return {"ok": True, "id": dup["id"], "duplicate": True}
         cur = con.execute(
-            "INSERT INTO stations(name, seed_id, seed_title, seed_artist, seed_thumb) VALUES (?,?,?,?,?)",
-            (name, vid, str(data.get("title") or ""), str(data.get("artist") or ""),
+            "INSERT INTO stations(user_id, name, seed_id, seed_title, seed_artist, seed_thumb) VALUES (?,?,?,?,?,?)",
+            (u["id"], name, vid, str(data.get("title") or ""), str(data.get("artist") or ""),
              str(data.get("thumbnail") or "")))
         sid = cur.lastrowid
     return {"ok": True, "id": sid}
 
 @app.delete("/api/stations/{sid}")
-def delete_station(sid: int):
+def delete_station(sid: int, request: Request):
+    u = _current_user(request)
     with db() as con:
-        cur = con.execute("DELETE FROM stations WHERE id=?", (sid,))
+        cur = con.execute("DELETE FROM stations WHERE id=? AND (user_id=? OR ?=1)",
+                          (sid, u["id"], u.get("is_admin", 0)))
     if not cur.rowcount:
         raise HTTPException(404, "Estação não encontrada")
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/reorder")
-def reorder_playlist(pid: int, body: dict):
+def reorder_playlist(pid: int, body: dict, request: Request):
     """Reordena as faixas de uma playlist: corpo {"order": [videoId, ...]}.
     IDs que não estiverem no corpo mantêm a posição relativa que já tinham."""
     if not isinstance(body, dict):
@@ -3447,9 +3905,9 @@ def reorder_playlist(pid: int, body: dict):
     order = body.get("order")
     if not isinstance(order, list):
         raise HTTPException(400, "corpo deve ser {\"order\": [videoId, ...]}")
+    u = _current_user(request)
     with db() as con:
-        if not con.execute("SELECT 1 FROM local_playlists WHERE id=?", (pid,)).fetchone():
-            raise HTTPException(404, "Playlist não encontrada")
+        _require_playlist_owner(con, pid, u)
         for i, vid in enumerate(order):
             vid = str(vid or "")
             if VID_RE.match(vid) or UP_RE.match(vid):
@@ -3458,7 +3916,7 @@ def reorder_playlist(pid: int, body: dict):
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/items_bulk")
-def add_items_bulk(pid: int, body: dict):
+def add_items_bulk(pid: int, body: dict, request: Request):
     """Importação em lote (playlist inteira do YouTube): {"tracks": [{videoId, ...}]}.
     IDs inválidos são ignorados; a ordem enviada é preservada."""
     if not isinstance(body, dict):
@@ -3467,10 +3925,10 @@ def add_items_bulk(pid: int, body: dict):
     if not isinstance(tracks, list) or not tracks:
         raise HTTPException(400, "corpo deve ser {\"tracks\": [...]}")
     tracks = tracks[:500]
+    u = _current_user(request)
     n = 0
     with db() as con:
-        if not con.execute("SELECT 1 FROM local_playlists WHERE id=?", (pid,)).fetchone():
-            raise HTTPException(404, "Playlist não encontrada")
+        _require_playlist_owner(con, pid, u)
         pos = con.execute("SELECT COALESCE(MAX(position),0) FROM playlist_items WHERE playlist_id=?",
                           (pid,)).fetchone()[0]
         for t in tracks:
@@ -3595,7 +4053,8 @@ def _pl_fetch_flat(pid: str, vid_fallback: str | None = None, cap: int = 500) ->
 _pl_pool = cf.ThreadPoolExecutor(max_workers=2)   # separado: playlist grande não trava busca/extração
 
 @app.get("/api/ytplaylist")
-def get_yt_playlist(url: str = Query(..., min_length=3)):
+def get_yt_playlist(request: Request, url: str = Query(..., min_length=3)):
+    _check_rate_limit(request, "ytplaylist")
     pid = _playlist_id_from_url(url)
     vid = _extract_video_id_from_url(url)
     if not pid:
@@ -3642,6 +4101,7 @@ def get_yt_playlist(url: str = Query(..., min_length=3)):
 # --- baixar a playlist inteira em subpasta (job em segundo plano) ---
 _pl_jobs: dict[str, dict] = {}
 _pl_jobs_lock = threading.Lock()
+_pl_dl_pool = cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="pl_dl")
 
 def _pl_safe_folder(name: str) -> str:
     safe = "".join(c for c in (name or "").strip() if c.isalnum() or c in " -_()").strip()[:60]
@@ -3682,6 +4142,9 @@ def _run_pl_download(job: dict, folder: Path, tracks: list):
     job["status"] = "cancelada" if job.get("cancel") else ("concluída" if not job["failed"] else "concluída com erros")
 
 def _pl_download_thread(job: dict, pid: str, tracks, folder_name: str):
+    if job.get("cancel"):
+        job["status"] = "cancelada"
+        return
     try:
         if not tracks:   # frontend não mandou a lista → busca flat agora
             job["status"] = "buscando faixas…"
@@ -3700,7 +4163,9 @@ def _pl_download_thread(job: dict, pid: str, tracks, folder_name: str):
         job["errors"].append(str(e)[:200])
 
 @app.post("/api/ytplaylist/download")
-def ytplaylist_download(body: dict):
+def ytplaylist_download(body: dict, request: Request):
+    u = _require_admin(request)
+    _check_rate_limit(request, "download")
     if not isinstance(body, dict):
         raise HTTPException(400, "o corpo deve ser um objeto JSON")
     pid = _playlist_id_from_url(str(body.get("url") or ""))
@@ -3712,56 +4177,59 @@ def ytplaylist_download(body: dict):
     else:
         tracks = None
     jid = uuid.uuid4().hex[:10]
-    job = {"id": jid, "status": "iniciando…", "total": len(tracks or []), "done": 0, "failed": 0,
+    job = {"id": jid, "user_id": u["id"], "status": "na fila…", "total": len(tracks or []), "done": 0, "failed": 0,
            "current": "", "folder": "", "cancel": False, "errors": [], "created": time.time()}
     _prune_pl_jobs()
     with _pl_jobs_lock:
         _pl_jobs[jid] = job
-    threading.Thread(target=_pl_download_thread,
-                     args=(job, pid, tracks, str(body.get("folder") or "")),
-                     daemon=True).start()
+    _pl_dl_pool.submit(_pl_download_thread, job, pid, tracks, str(body.get("folder") or ""))
     return {"ok": True, "jobId": jid}
 
 @app.get("/api/ytplaylist/job/{jid}")
-def ytplaylist_job(jid: str):
+def ytplaylist_job(jid: str, request: Request):
+    u = _require_admin(request)
     with _pl_jobs_lock:
         job = _pl_jobs.get(jid)
         if not job:
             raise HTTPException(404, "job não encontrado")
+        if job.get("user_id") not in (None, u["id"]) and not u.get("is_admin"):
+            raise HTTPException(403, "Acesso negado a este job")
         snap = {k: job.get(k) for k in ("id", "status", "total", "done", "failed", "current", "folder")}
         snap["errors"] = list(job.get("errors") or [])[-10:]
     return snap
 
 @app.post("/api/ytplaylist/job/{jid}/cancel")
-def ytplaylist_job_cancel(jid: str):
+def ytplaylist_job_cancel(jid: str, request: Request):
+    u = _require_admin(request)
     with _pl_jobs_lock:
         job = _pl_jobs.get(jid)
         if not job:
             raise HTTPException(404, "job não encontrado")
+        if job.get("user_id") not in (None, u["id"]) and not u.get("is_admin"):
+            raise HTTPException(403, "Acesso negado a este job")
         job["cancel"] = True
     return {"ok": True}
 
 @app.post("/api/playlists/{pid}/download")
-def download_saved_playlist(pid: int):
+def download_saved_playlist(pid: int, request: Request):
     """Baixa uma playlist SALVA da aba Playlists direto pra subpasta
     downloads/playlists/<nome>/ — mesmo sistema de jobs do link do YouTube.
     Assim a playlist continua baixável depois de importada/adicionada."""
+    u = _require_admin(request)
+    _check_rate_limit(request, "download")
     with db() as con:
-        pl = row(con.execute("SELECT * FROM local_playlists WHERE id=?", (pid,)).fetchone())
-        if not pl:
-            raise HTTPException(404, "Playlist não encontrada")
+        pl = row(_require_playlist_owner(con, pid, u))
         tracks = [track_row(r) for r in con.execute(
             "SELECT * FROM playlist_items WHERE playlist_id=? ORDER BY position", (pid,))]
     if not tracks:
         raise HTTPException(400, "Playlist vazia — não tem o que baixar")
     jid = uuid.uuid4().hex[:10]
-    job = {"id": jid, "status": "iniciando…", "total": len(tracks), "done": 0, "failed": 0,
+    job = {"id": jid, "user_id": u["id"], "status": "na fila…", "total": len(tracks), "done": 0, "failed": 0,
            "current": "", "folder": "", "cancel": False, "errors": [], "created": time.time()}
     _prune_pl_jobs()
     with _pl_jobs_lock:
         _pl_jobs[jid] = job
-    threading.Thread(target=_pl_download_thread,
-                     args=(job, "", tracks, pl["name"]), daemon=True).start()
+    _pl_dl_pool.submit(_pl_download_thread, job, "", tracks, pl["name"])
     return {"ok": True, "jobId": jid, "total": len(tracks)}
 
 # ---------- Downloads ----------
@@ -3853,6 +4321,8 @@ def _download_to_dir(video_id: str, out_dir: Path, title_hint: str = "") -> dict
     Novos arquivos ganham sufixo ' [videoId]': dois vídeos com o MESMO título
     não se sobrescrevem mais (bug da colisão de nomes). Downloads antigos, sem
     o sufixo, continuam sendo encontrados pela 2ª verificação."""
+    if not VID_RE.match(video_id or ""):
+        raise HTTPException(400, "video_id inválido")
     safe = "".join(c for c in title_hint if c.isalnum() or c in " -_()")[:80].strip() or video_id
     key = f"{safe} [{video_id}]"
     # já baixado antes? responde na hora sem passar pelo yt-dlp
@@ -3904,8 +4374,12 @@ def _download_to_dir(video_id: str, out_dir: Path, title_hint: str = "") -> dict
         with _dl_lock:
             _dl_active.discard(video_id)
 
+_DL_EXTS = (".mp3", ".m4a", ".webm", ".opus")
+
 @app.post("/api/download/{video_id}")
-def download(video_id: str, title: str = Query("")):
+def download(video_id: str, request: Request, title: str = Query("")):
+    _require_admin(request)
+    _check_rate_limit(request, "download")
     try:
         return {"ok": True, **_download_to_dir(video_id, DL_DIR, title)}
     except HTTPException:
@@ -3917,19 +4391,22 @@ def download(video_id: str, title: str = Query("")):
 def list_downloads():
     """Arquivos soltos em downloads/ — [{name, videoId}] (videoId vem do índice;
     downloads antigos, anteriores ao índice, voltam com videoId null)."""
-    _dl_index_load()
+    with _dl_index_lock:
+        _dl_index_load()
+        rev = {str(rec.get("file") or "").replace("\\", "/").lower(): v for v, rec in _dl_index.items()}
+    data_res = DATA.resolve()
     out = []
     for f in sorted(DL_DIR.iterdir(), key=lambda x: x.name.lower()):
         if not f.is_file() or f.name.startswith("."):
             continue
-        vid = next((v for v, rec in _dl_index.items() if rec.get("file") == str(f.relative_to(DATA))), None)
-        out.append({"name": f.name, "videoId": vid})
+        rel = str(f.resolve().relative_to(data_res)).replace("\\", "/").lower()
+        out.append({"name": f.name, "videoId": rev.get(rel)})
     return out
 
 @app.get("/downloads/{name}")
 def get_download(name: str):
     p = (DL_DIR / name).resolve()
-    if not p.is_file() or p.parent != DL_DIR.resolve():
+    if not p.is_file() or p.parent != DL_DIR.resolve() or p.name.startswith(".") or p.suffix.lower() not in _DL_EXTS:
         raise HTTPException(404)
     return FileResponse(p, filename=p.name)
 
@@ -3939,8 +4416,10 @@ def downloads_folders():
     Cada arquivo vem com videoId quando conhecido (índice de downloads)."""
     root = DL_DIR / "playlists"
     out = []
-    _dl_index_load()
-    rev = {rec.get("file"): v for v, rec in _dl_index.items()}
+    with _dl_index_lock:
+        _dl_index_load()
+        rev = {str(rec.get("file") or "").replace("\\", "/").lower(): v for v, rec in _dl_index.items()}
+    data_res = DATA.resolve()
     if root.is_dir():
         for d in sorted(root.iterdir(), key=lambda x: x.name.lower()):
             if not d.is_dir():
@@ -3948,15 +4427,16 @@ def downloads_folders():
             files = []
             for f in sorted(d.iterdir(), key=lambda x: x.name.lower()):
                 if f.is_file() and f.suffix.lower() in (".mp3", ".m4a", ".webm", ".opus"):
-                    rel = str(f.relative_to(DATA))
+                    rel = str(f.resolve().relative_to(data_res)).replace("\\", "/").lower()
                     files.append({"name": f.name, "videoId": rev.get(rel)})
             out.append({"name": d.name, "count": len(files), "files": files})
     return out
 
 @app.delete("/api/downloads/folders/{folder}")
-def delete_download_folder(folder: str):
+def delete_download_folder(folder: str, request: Request):
     """Exclui a subpasta inteira de uma playlist baixada (com trava de travessia:
     só vale pasta FILHA DIRETA de downloads/playlists/)."""
+    _require_admin(request)
     base = (DL_DIR / "playlists").resolve()
     fdir = (DL_DIR / "playlists" / folder).resolve()
     if fdir.parent != base or not fdir.is_dir():
@@ -3982,11 +4462,9 @@ def get_pl_download(folder: str, name: str):
     if fdir.parent != base:          # bloqueia ../ e trapaça de caminho
         raise HTTPException(404)
     p = (fdir / name).resolve()
-    if not p.is_file() or p.parent != fdir:
+    if not p.is_file() or p.parent != fdir or p.name.startswith(".") or p.suffix.lower() not in _DL_EXTS:
         raise HTTPException(404)
     return FileResponse(p, filename=p.name)
-
-_DL_EXTS = (".mp3", ".m4a", ".webm", ".opus")
 
 def _dl_index_remove_file(rel_path: str) -> int:
     """Tira do índice todo vídeo cujo arquivo baixado era rel_path (nada de fantasma).
@@ -4006,9 +4484,10 @@ def _dl_index_remove_file(rel_path: str) -> int:
         return len(dead)
 
 @app.delete("/api/downloads/{name}")
-def delete_download_file(name: str):
+def delete_download_file(name: str, request: Request):
     """Exclui UMA música avulsa de downloads/ (apontamento do Argon: só existia
     DELETE de pasta inteira e de cache — não dava pra apagar um arquivo só)."""
+    _require_admin(request)
     p = (DL_DIR / name).resolve()
     if p.parent != DL_DIR.resolve() or not p.is_file():
         raise HTTPException(404, "Arquivo não encontrado")
@@ -4021,8 +4500,9 @@ def delete_download_file(name: str):
     return {"ok": True, "indexed": n}
 
 @app.delete("/api/downloads/folders/{folder}/{name}")
-def delete_download_folder_file(folder: str, name: str):
+def delete_download_folder_file(folder: str, name: str, request: Request):
     """Idem, para um arquivo DENTRO de downloads/playlists/<pasta>/."""
+    _require_admin(request)
     base = (DL_DIR / "playlists").resolve()
     fdir = (base / folder).resolve()
     if fdir.parent != base or not fdir.is_dir():
@@ -4037,12 +4517,7 @@ def delete_download_folder_file(folder: str, name: str):
     return {"ok": True, "indexed": n}
 
 # ---------- Suas músicas (upload de arquivos de FORA do YouTube) ----------
-# Estende a biblioteca estilo Koel/Navidrome: o usuário envia os MP3/flac dele
-# e toca tudo no mesmo app. O id tem prefixo up_ (13 chars) para NUNCA colidir
-# com videoId de 11 chars do YouTube.
-UP_RE = re.compile(r"^up_[a-f0-9]{10}$")
-UP_DIR = DL_DIR / "upload"
-UP_DIR.mkdir(exist_ok=True)
+# UP_RE e UP_DIR já definidos na seção de cache/id acima (evita duplicação).
 UP_EXT = {".mp3", ".m4a", ".mp4", ".opus", ".ogg", ".oga", ".flac", ".wav", ".webm"}
 UP_MAX_MB = 300
 
@@ -4139,19 +4614,31 @@ def _is_safe_url(url: str) -> bool:
         return False
 
 def _dl_art(url: str):
-    """Baixa a capa (JPEG). Protegido contra SSRF e com limite de 5MB. Retorna None em qualquer falha — capa é bônus."""
-    if not url or not _is_safe_url(url):
+    """Baixa a capa (JPEG). Protegido contra SSRF (inclusive redirects) e com limite de 5MB."""
+    cur = str(url or "").strip()
+    if not cur:
         return None
     try:
-        r = requests.get(url, timeout=8, stream=True)
-        if r.ok:
-            content = b""
-            for chunk in r.iter_content(chunk_size=64 * 1024):
-                content += chunk
-                if len(content) > 5 * 1024 * 1024:
+        for _ in range(4):
+            if not _is_safe_url(cur):
+                return None
+            with requests.get(cur, timeout=8, stream=True, allow_redirects=False) as r:
+                if r.is_redirect or r.status_code in (301, 302, 303, 307, 308):
+                    loc = r.headers.get("location")
+                    if not loc:
+                        return None
+                    cur = urllib.parse.urljoin(cur, loc)
+                    continue
+                if not r.ok:
                     return None
-            if content[:3] == b"\xff\xd8\xff":
-                return content
+                content = b""
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    content += chunk
+                    if len(content) > 5 * 1024 * 1024:
+                        return None
+                if content[:3] == b"\xff\xd8\xff":
+                    return content
+                return None
     except Exception:
         pass
     return None
@@ -4334,9 +4821,10 @@ def _up_meta(p: Path, fallback_name: str = "") -> dict:
 UP_DIR_MAX_MB = 10000   # teto de 10 GB para biblioteca própria
 
 @app.post("/api/uploads")
-def upload_tracks(files: list[UploadFile] = File(...)):
+def upload_tracks(request: Request, files: list[UploadFile] = File(...)):
     """Importa arquivos de áudio do computador para a biblioteca (dedupe por
     conteúdo: o mesmo arquivo enviado 2x não duplica)."""
+    _require_admin(request)
     import hashlib
     added, dup, errs = 0, 0, []
     imported = []   # faixas novas no formato do frontend (pra jogar na playlist aberta)
@@ -4477,9 +4965,10 @@ def upload_guess(title: str = "", artist: str = ""):
     return {"ok": True, "results": out}
 
 @app.post("/api/uploads/{uid}/edit")
-def edit_upload(uid: str, body: dict):
+def edit_upload(uid: str, body: dict, request: Request):
     """Edita título/artista/álbum do upload: grava no banco E nas tags do
     arquivo (MP3/MP4/FLAC), baixa e embute a capa se vier art_url."""
+    _require_admin(request)
     if not UP_RE.match(uid):
         raise HTTPException(400, "id inválido")
     if not isinstance(body, dict):
@@ -4523,13 +5012,17 @@ def edit_upload(uid: str, body: dict):
             "thumbnail": f"/api/local/{uid}/art" if art_col else ""}
 
 @app.delete("/api/uploads/{uid}")
-def delete_upload(uid: str):
+def delete_upload(uid: str, request: Request):
+    _require_admin(request)
     if not UP_RE.match(uid):
         raise HTTPException(400, "id inválido")
     with db() as con:
         rec = con.execute("SELECT file, art FROM uploads WHERE id=?", (uid,)).fetchone()
         if not rec:
             raise HTTPException(404, "upload não encontrado")
+        con.execute("DELETE FROM favorites WHERE video_id=?", (uid,))
+        con.execute("DELETE FROM history WHERE video_id=?", (uid,))
+        con.execute("DELETE FROM playlist_items WHERE video_id=?", (uid,))
         con.execute("DELETE FROM uploads WHERE id=?", (uid,))
     for fn in {rec["file"], rec["art"]}:
         if fn:

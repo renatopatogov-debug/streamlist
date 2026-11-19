@@ -20,8 +20,8 @@ services:
     environment:
       # OBRIGATÓRIO: sem isto a instância fica aberta para quem achar a URL.
       APP_TOKEN: ${APP_TOKEN:?defina APP_TOKEN no arquivo .env}
-      # Atualiza o yt-dlp sozinho: o YouTube quebra versões antigas de tempos em tempos.
-      AUTO_UPDATE_YTDLP: "1"
+      # Em container não-root, atualize o yt-dlp reconstruindo a imagem (evita pip em runtime).
+      AUTO_UPDATE_YTDLP: "0"
       # Mede os clients no arranque (os "pre-tests") — melhora a 1ª faixa.
       PROBE_ON_BOOT: "1"
     volumes:
